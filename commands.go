@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/safe-compose/e2b-go/internal/connectrpc"
+	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
 // processServiceName 是进程管理 RPC 服务的名称。

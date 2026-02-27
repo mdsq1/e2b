@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/safe-compose/e2b-go/internal/connectrpc"
+	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
 // Pty 提供沙箱中的伪终端操作功能。

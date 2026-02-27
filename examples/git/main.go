@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	e2b "github.com/safe-compose/e2b-go"
+	e2b "github.com/mdsq1/e2b"
 )
 
 func main() {

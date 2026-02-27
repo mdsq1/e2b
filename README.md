@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-go get github.com/safe-compose/e2b-go
+go get github.com/mdsq1/e2b
 ```
 
 ## 快速开始
@@ -21,7 +21,7 @@ import (
 	"log"
 	"os"
 
-	e2b "github.com/safe-compose/e2b-go"
+	e2b "github.com/mdsq1/e2b"
 )
 
 func main() {

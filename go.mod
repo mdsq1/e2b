@@ -1,3 +1,3 @@
-module github.com/safe-compose/e2b-go
+module github.com/mdsq1/e2b
 
 go 1.21

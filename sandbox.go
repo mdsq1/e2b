@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/safe-compose/e2b-go/internal/connectrpc"
+	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
 // Sandbox 表示一个正在运行的 E2B 沙箱。

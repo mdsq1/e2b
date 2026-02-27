@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/safe-compose/e2b-go/internal/connectrpc"
+	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
 // filesystemServiceName 是文件系统 RPC 服务的名称。
