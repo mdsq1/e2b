@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,15 @@ import (
 type Client struct {
 	config     ConnectionConfig // 连接配置
 	httpClient *http.Client     // HTTP 客户端
+}
+
+// logf 输出日志，优先使用自定义 logger，否则 fallback 到标准 log
+func (c *Client) logf(format string, args ...interface{}) {
+	if c.config.Logger != nil {
+		c.config.Logger.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
 }
 
 // NewClient 创建一个新的 E2B API 客户端。
@@ -103,6 +113,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 			AccessToken:    accessToken,
 			SandboxURL:     sandboxURL,
 			Headers:        headers,
+			Logger:         cfg.logger,
 		},
 		httpClient: httpClient,
 	}, nil
@@ -117,12 +128,14 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 // doRequestWithHeaders 与 doRequest 类似，但同时返回响应头。
 func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, body, result any) (http.Header, error) {
 	var bodyReader io.Reader
+	var requestBody string
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, &SandboxError{Message: fmt.Sprintf("failed to marshal request body: %v", err), Cause: err}
 		}
 		bodyReader = bytes.NewReader(data)
+		requestBody = string(data)
 	}
 
 	url := c.config.APIURL + path
@@ -139,6 +152,15 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 		req.Header.Set(k, v)
 	}
 
+	// 输出 HTTP 请求详情（调试用）
+	if c.config.Debug {
+		c.logf("[E2B HTTP] %s %s", method, url)
+		c.logf("[E2B HTTP] Headers: %v", req.Header)
+		if requestBody != "" {
+			c.logf("[E2B HTTP] Body: %s", requestBody)
+		}
+	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("request failed: %v", err), Cause: err}
@@ -148,6 +170,13 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to read response body: %v", err), Cause: err}
+	}
+
+	// 输出 HTTP 响应详情（调试用）
+	if c.config.Debug {
+		c.logf("[E2B HTTP] Status: %d", resp.StatusCode)
+		c.logf("[E2B HTTP] Headers: %v", resp.Header)
+		c.logf("[E2B HTTP] Body: %s", string(respBody))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

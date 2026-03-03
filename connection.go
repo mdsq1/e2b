@@ -12,13 +12,13 @@ const (
 	EnvdPort    = 49983 // envd 服务端口
 	JupyterPort = 49999 // Jupyter 服务端口
 
-	DefaultDomain                  = "e2b.app"            // 默认域名
-	DefaultAPIURL                  = "https://api.e2b.app" // 默认 API 地址
-	DefaultDebugAPIURL             = "http://localhost:3000" // 调试模式下的默认 API 地址
-	DefaultRequestTimeout          = 60 * time.Second       // 默认请求超时时间
-	DefaultSandboxTimeout          = 300                    // 默认沙箱超时时间（秒）
-	DefaultTemplate                = "base"                 // 默认沙箱模板
-	DefaultCodeInterpreterTemplate = "code-interpreter-v1"  // 默认代码解释器模板
+	DefaultDomain                  = "aisandbox.qihoo.net"             // 默认域名
+	DefaultAPIURL                  = "https://api.aisandbox.qihoo.net" // 默认 API 地址
+	DefaultDebugAPIURL             = "http://localhost:3000"           // 调试模式下的默认 API 地址
+	DefaultRequestTimeout          = 60 * time.Second                  // 默认请求超时时间
+	DefaultSandboxTimeout          = 300                               // 默认沙箱超时时间（秒）
+	DefaultTemplate                = "base"                            // 默认沙箱模板
+	DefaultCodeInterpreterTemplate = "code-interpreter-v1"             // 默认代码解释器模板
 
 	// SDKVersion 是 Go SDK 的版本号。
 	SDKVersion = "0.1.0"
@@ -44,6 +44,7 @@ type ConnectionConfig struct {
 	Headers        map[string]string // 自定义请求头
 	SandboxURL     string            // 沙箱服务地址
 	AccessToken    string            // 访问令牌
+	Logger         Logger            // 自定义日志输出
 }
 
 // GetHost 根据沙箱 ID、域名和端口号构建主机地址。

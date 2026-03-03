@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// === 日志接口 ===
+
+// Logger 日志回调接口
+type Logger interface {
+	Printf(format string, args ...interface{})
+}
+
 // === 客户端选项 ===
 
 // clientConfig 包含客户端的内部配置参数。
@@ -17,6 +24,7 @@ type clientConfig struct {
 	debug          bool          // 调试模式
 	accessToken    string        // 访问令牌
 	sandboxURL     string        // 沙箱服务地址
+	logger         Logger        // 自定义日志输出
 }
 
 // ClientOption 是用于配置客户端的函数选项类型。
@@ -25,6 +33,11 @@ type ClientOption func(*clientConfig)
 // WithAPIKey 设置 API 密钥。
 func WithAPIKey(key string) ClientOption {
 	return func(c *clientConfig) { c.apiKey = key }
+}
+
+// WithLogger 设置自定义日志输出。
+func WithLogger(logger Logger) ClientOption {
+	return func(c *clientConfig) { c.logger = logger }
 }
 
 // WithDomain 设置服务域名。
@@ -208,14 +221,14 @@ func WithStdin(enabled bool) CommandOption {
 
 // runCodeConfig 包含代码执行的内部配置参数。
 type runCodeConfig struct {
-	language     string                // 编程语言
-	codeContext  *CodeContext          // 代码执行上下文
-	envVars      map[string]string     // 环境变量
-	timeout      float64               // 超时时间（秒）
-	onStdout     func(OutputMessage)   // 标准输出回调
-	onStderr     func(OutputMessage)   // 标准错误回调
-	onResult     func(Result)          // 结果回调
-	onError      func(ExecutionError)  // 错误回调
+	language    string               // 编程语言
+	codeContext *CodeContext         // 代码执行上下文
+	envVars     map[string]string    // 环境变量
+	timeout     float64              // 超时时间（秒）
+	onStdout    func(OutputMessage)  // 标准输出回调
+	onStderr    func(OutputMessage)  // 标准错误回调
+	onResult    func(Result)         // 结果回调
+	onError     func(ExecutionError) // 错误回调
 }
 
 // RunCodeOption 是用于配置代码执行的函数选项类型。
