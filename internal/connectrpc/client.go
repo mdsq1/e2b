@@ -19,7 +19,8 @@ type Client struct {
 }
 
 // CallUnary 执行一元 RPC 调用（一个请求，一个响应）。
-func (c *Client) CallUnary(ctx context.Context, service, method string, req, resp any) error {
+// extraHeaders 为可选的每次请求附加头，例如 Authorization 用于用户认证。
+func (c *Client) CallUnary(ctx context.Context, service, method string, req, resp any, extraHeaders ...map[string]string) error {
 	url := fmt.Sprintf("%s/%s/%s", c.BaseURL, service, method)
 
 	body, err := json.Marshal(req)
@@ -35,6 +36,11 @@ func (c *Client) CallUnary(ctx context.Context, service, method string, req, res
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Connect-Protocol-Version", "1")
 	c.setHeaders(httpReq)
+	for _, h := range extraHeaders {
+		for k, v := range h {
+			httpReq.Header.Set(k, v)
+		}
+	}
 
 	httpResp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -61,7 +67,8 @@ func (c *Client) CallUnary(ctx context.Context, service, method string, req, res
 }
 
 // CallServerStream 执行服务端流式 RPC 调用。
-func (c *Client) CallServerStream(ctx context.Context, service, method string, req any, timeoutMs int) (*StreamReader, error) {
+// extraHeaders 为可选的每次请求附加头，例如 Authorization 用于用户认证。
+func (c *Client) CallServerStream(ctx context.Context, service, method string, req any, timeoutMs int, extraHeaders ...map[string]string) (*StreamReader, error) {
 	url := fmt.Sprintf("%s/%s/%s", c.BaseURL, service, method)
 
 	jsonBody, err := json.Marshal(req)
@@ -81,6 +88,11 @@ func (c *Client) CallServerStream(ctx context.Context, service, method string, r
 		httpReq.Header.Set("Connect-Timeout-Ms", strconv.Itoa(timeoutMs))
 	}
 	c.setHeaders(httpReq)
+	for _, h := range extraHeaders {
+		for k, v := range h {
+			httpReq.Header.Set(k, v)
+		}
+	}
 
 	httpResp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

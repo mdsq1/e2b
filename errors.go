@@ -1,6 +1,10 @@
 package e2b
 
-import "fmt"
+import (
+	"fmt"
+	"net"
+	"strings"
+)
 
 // SandboxError 是所有沙箱操作的基础错误类型。
 type SandboxError struct {
@@ -185,6 +189,31 @@ const (
 	ConnectCodeNotFound      = "not_found"      // 资源未找到
 	ConnectCodeAlreadyExists = "already_exists" // 资源已存在
 )
+
+// isConflictError 判断错误是否为 409 Conflict（资源已处于目标状态）。
+func isConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "409") || strings.Contains(msg, "Conflict") || strings.Contains(msg, "conflict")
+}
+
+// isTimeoutError 判断错误是否为超时类型（网络超时或 context 超时）。
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// net.Error 接口提供 Timeout() 方法
+	var netErr net.Error
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return true
+	}
+	_ = netErr
+	// 检查错误消息中是否含有超时关键字
+	msg := err.Error()
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
+}
 
 // mapHTTPError 将 HTTP 状态码映射为对应的错误类型。
 func mapHTTPError(statusCode int, body string) error {

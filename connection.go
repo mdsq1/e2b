@@ -11,14 +11,23 @@ import (
 const (
 	EnvdPort    = 49983 // envd 服务端口
 	JupyterPort = 49999 // Jupyter 服务端口
+	MCPPort     = 50005 // MCP gateway 服务端口（与 Python SDK SandboxBase.mcp_port 对齐）
 
-	DefaultDomain                  = "aisandbox.qihoo.net"             // 默认域名
-	DefaultAPIURL                  = "https://api.aisandbox.qihoo.net" // 默认 API 地址
-	DefaultDebugAPIURL             = "http://localhost:3000"           // 调试模式下的默认 API 地址
-	DefaultRequestTimeout          = 60 * time.Second                  // 默认请求超时时间
-	DefaultSandboxTimeout          = 300                               // 默认沙箱超时时间（秒）
-	DefaultTemplate                = "base"                            // 默认沙箱模板
-	DefaultCodeInterpreterTemplate = "code-interpreter-v1"             // 默认代码解释器模板
+	// KeepalivePingIntervalSec 是流式 RPC 的保活 ping 间隔（秒）。
+	// 与 Python SDK KEEPALIVE_PING_INTERVAL_SEC = 50 对齐。
+	KeepalivePingIntervalSec = 50
+
+	// DefaultCommandTimeout 是 Commands.Run/Start 的默认超时时间（秒）。
+	// 与 Python SDK commands.run(timeout=60) 默认值对齐。
+	DefaultCommandTimeout = 60
+
+	DefaultDomain                  = "e2b.app"               // 默认域名
+	DefaultAPIURL                  = "https://api.e2b.app"   // 默认 API 地址
+	DefaultDebugAPIURL             = "http://localhost:3000" // 调试模式下的默认 API 地址
+	DefaultRequestTimeout          = 60 * time.Second        // 默认请求超时时间
+	DefaultSandboxTimeout          = 300                     // 默认沙箱超时时间（秒）
+	DefaultTemplate                = "base"                  // 默认沙箱模板
+	DefaultCodeInterpreterTemplate = "code-interpreter-v1"   // 默认代码解释器模板
 
 	// SDKVersion 是 Go SDK 的版本号。
 	SDKVersion = "0.1.0"
@@ -27,11 +36,11 @@ const (
 	AllTraffic = "0.0.0.0/0"
 )
 
-// envd 功能所需的最低版本号。
+// envd 功能所需的最低版本号（与 Python SDK 对齐）。
 var (
-	envdVersionStdin          = [3]int{0, 1, 2} // 支持标准输入的最低版本
-	envdVersionRecursiveWatch = [3]int{0, 1, 4} // 支持递归监听的最低版本
-	envdVersionDefaultUser    = [3]int{0, 1, 5} // 支持默认用户的最低版本
+	envdVersionStdin          = [3]int{0, 3, 0} // 支持标准输入的最低版本（Python: ENVD_COMMANDS_STDIN = 0.3.0）
+	envdVersionRecursiveWatch = [3]int{0, 1, 4} // 支持递归监听的最低版本（Python: ENVD_VERSION_RECURSIVE_WATCH = 0.1.4）
+	envdVersionDefaultUser    = [3]int{0, 4, 0} // 支持默认用户的最低版本（Python: ENVD_DEFAULT_USER = 0.4.0）
 )
 
 // ConnectionConfig 包含与 E2B 服务建立连接所需的配置信息。

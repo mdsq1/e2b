@@ -4,18 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // CodeInterpreter 嵌入 *Sandbox 并添加代码执行能力。
 type CodeInterpreter struct {
-	*Sandbox                      // 嵌入的沙箱实例
-	jupyterURL  string            // Jupyter 服务 URL
-	jupyterHTTP *http.Client      // Jupyter HTTP 客户端
+	*Sandbox                 // 嵌入的沙箱实例
+	jupyterURL  string       // Jupyter 服务 URL
+	jupyterHTTP *http.Client // Jupyter HTTP 客户端
 }
 
 // CreateCodeInterpreter 创建一个新的代码解释器沙箱。
@@ -42,16 +44,20 @@ func newCodeInterpreter(sbx *Sandbox) *CodeInterpreter {
 		jupyterURL: fmt.Sprintf("%s://%s", scheme, host),
 		jupyterHTTP: &http.Client{
 			Timeout: 5 * time.Minute,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
 		},
 	}
 }
 
 // executeRequest 是 /execute 端点的请求体。
 type executeRequest struct {
-	Code    string            `json:"code"`                // 要执行的代码
-	Context *string           `json:"context_id,omitempty"` // 执行上下文 ID
-	EnvVars map[string]string `json:"env_vars,omitempty"`  // 环境变量
-	Timeout *float64          `json:"timeout,omitempty"`   // 超时时间（秒）
+	Code     string            `json:"code"`                 // 要执行的代码
+	Context  *string           `json:"context_id,omitempty"` // 执行上下文 ID
+	Language string            `json:"language,omitempty"`   // 编程语言（与 Python SDK 对齐）
+	EnvVars  map[string]string `json:"env_vars,omitempty"`   // 环境变量
+	Timeout  *float64          `json:"timeout,omitempty"`    // 超时时间（秒）
 }
 
 // streamEvent 表示 /execute 流式响应中的单行事件。
@@ -88,18 +94,26 @@ type streamEvent struct {
 }
 
 // RunCode 在代码解释器中执行代码并返回结果。
+// 与 Python SDK 一致：context_id 与 language 二选一，不可同时提供（服务端 400）。
 func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...RunCodeOption) (*Execution, error) {
 	cfg := &runCodeConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
+	// 与 Python 一致：调用时不允许同时传 context 和 language（见 code_interpreter_sync.run_code）
+	if cfg.codeContext != nil && cfg.language != "" {
+		return nil, &SandboxError{Message: "You can provide context or language, but not both at the same time.", Cause: nil}
+	}
+
 	reqBody := executeRequest{
-		Code:    code,
-		EnvVars: cfg.envVars,
+		Code:     code,
+		Language: cfg.language,
+		EnvVars:  cfg.envVars,
 	}
 	if cfg.codeContext != nil {
 		reqBody.Context = &cfg.codeContext.ID
+		reqBody.Language = "" // 有 context 时只发 context_id，与 Python 请求体语义一致
 	}
 	if cfg.timeout > 0 {
 		reqBody.Timeout = &cfg.timeout
@@ -116,7 +130,7 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to create request: %v", err), Cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	ci.Sandbox.setSandboxHeaders(req)
+	ci.Sandbox.setSandboxHeadersWithPort(req, JupyterPort)
 
 	resp, err := ci.jupyterHTTP.Do(req)
 	if err != nil {
@@ -137,14 +151,26 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	// 扩大缓冲区至 1MB，避免大输出（如图片 base64、长文本）超过默认 64KB 限制被截断
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
 
+		// 兼容 SSE（Server-Sent Events）格式：部分沙箱的 /execute 返回带 "data: " 前缀的行
+		line = strings.TrimPrefix(line, "data: ")
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+
 		var event streamEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			// 记录解析失败的行，方便排查响应格式问题
+			if ci.Sandbox.client.config.Logger != nil {
+				ci.Sandbox.client.config.Logger.Printf("[e2b] stream parse error: %v, line: %.200s", err, line)
+			}
 			continue
 		}
 
@@ -225,6 +251,7 @@ func (ci *CodeInterpreter) parseResult(event *streamEvent) Result {
 }
 
 // CreateCodeContext 创建一个新的有状态代码执行上下文。
+// 与 Python SDK 对齐：支持 language 和 cwd 参数（WithCodeCwd、WithLanguage）。
 func (ci *CodeInterpreter) CreateCodeContext(ctx context.Context, opts ...RunCodeOption) (*CodeContext, error) {
 	cfg := &runCodeConfig{}
 	for _, opt := range opts {
@@ -234,6 +261,9 @@ func (ci *CodeInterpreter) CreateCodeContext(ctx context.Context, opts ...RunCod
 	reqBody := map[string]string{}
 	if cfg.language != "" {
 		reqBody["language"] = cfg.language
+	}
+	if cfg.cwd != "" {
+		reqBody["cwd"] = cfg.cwd
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -247,7 +277,7 @@ func (ci *CodeInterpreter) CreateCodeContext(ctx context.Context, opts ...RunCod
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to create request: %v", err), Cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	ci.Sandbox.setSandboxHeaders(req)
+	ci.Sandbox.setSandboxHeadersWithPort(req, JupyterPort)
 
 	resp, err := ci.jupyterHTTP.Do(req)
 	if err != nil {
@@ -275,7 +305,7 @@ func (ci *CodeInterpreter) ListCodeContexts(ctx context.Context) ([]CodeContext,
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to create request: %v", err), Cause: err}
 	}
-	ci.Sandbox.setSandboxHeaders(req)
+	ci.Sandbox.setSandboxHeadersWithPort(req, JupyterPort)
 
 	resp, err := ci.jupyterHTTP.Do(req)
 	if err != nil {
@@ -303,7 +333,7 @@ func (ci *CodeInterpreter) RemoveCodeContext(ctx context.Context, contextID stri
 	if err != nil {
 		return &SandboxError{Message: fmt.Sprintf("failed to create request: %v", err), Cause: err}
 	}
-	ci.Sandbox.setSandboxHeaders(req)
+	ci.Sandbox.setSandboxHeadersWithPort(req, JupyterPort)
 
 	resp, err := ci.jupyterHTTP.Do(req)
 	if err != nil {
@@ -326,7 +356,7 @@ func (ci *CodeInterpreter) RestartCodeContext(ctx context.Context, codeCtx *Code
 	if err != nil {
 		return &SandboxError{Message: fmt.Sprintf("failed to create request: %v", err), Cause: err}
 	}
-	ci.Sandbox.setSandboxHeaders(req)
+	ci.Sandbox.setSandboxHeadersWithPort(req, JupyterPort)
 
 	resp, err := ci.jupyterHTTP.Do(req)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,7 +63,7 @@ func TestIntegration_CreateAndKillSandbox(t *testing.T) {
 		t.Errorf("info.SandboxID=%q != sbx.ID=%q", info.SandboxID, sbx.ID)
 	}
 
-	err = sbx.Kill(ctx)
+	_, err = sbx.Kill(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -761,22 +762,30 @@ func TestIntegration_FileWatchDir(t *testing.T) {
 
 	sbx.Files.MakeDir(ctx, "/tmp/watchdir_test")
 
-	watcher, err := sbx.Files.WatchDir(ctx, "/tmp/watchdir_test")
+	var receivedEvents []FilesystemEvent
+	var mu sync.Mutex
+
+	watcher, err := sbx.Files.WatchDir(ctx, "/tmp/watchdir_test", func(ev FilesystemEvent) {
+		mu.Lock()
+		receivedEvents = append(receivedEvents, ev)
+		mu.Unlock()
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer watcher.Stop(ctx)
+	defer watcher.Stop()
 
 	// Create a file to trigger event
 	sbx.Files.Write(ctx, "/tmp/watchdir_test/trigger.txt", "data")
 
-	// Wait briefly for events to register
-	time.Sleep(500 * time.Millisecond)
+	// Wait briefly for events to arrive via streaming
+	time.Sleep(1 * time.Second)
+	watcher.Stop()
 
-	events, err := watcher.GetNewEvents(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mu.Lock()
+	events := make([]FilesystemEvent, len(receivedEvents))
+	copy(events, receivedEvents)
+	mu.Unlock()
 
 	if len(events) == 0 {
 		t.Error("expected at least one filesystem event")

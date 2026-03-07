@@ -367,6 +367,39 @@ func TestNewClientWithOption(t *testing.T) {
 	}
 }
 
+// === buildAuthHeader Tests ===
+
+func TestBuildAuthHeaderEmpty(t *testing.T) {
+	h := buildAuthHeader("")
+	if h != nil {
+		t.Errorf("expected nil for empty user, got %v", h)
+	}
+}
+
+func TestBuildAuthHeaderUser(t *testing.T) {
+	h := buildAuthHeader("user")
+	if h == nil {
+		t.Fatal("expected non-nil header")
+	}
+	// Python: base64("user:") = "dXNlcjo="
+	want := "Basic dXNlcjo="
+	if h["Authorization"] != want {
+		t.Errorf("Authorization header: got %q, want %q", h["Authorization"], want)
+	}
+}
+
+func TestBuildAuthHeaderRoot(t *testing.T) {
+	h := buildAuthHeader("root")
+	if h == nil {
+		t.Fatal("expected non-nil header")
+	}
+	// base64("root:") = "cm9vdDo="
+	want := "Basic cm9vdDo="
+	if h["Authorization"] != want {
+		t.Errorf("Authorization header: got %q, want %q", h["Authorization"], want)
+	}
+}
+
 // === Sandbox resolveUsername Tests ===
 
 func TestResolveUsernameExplicit(t *testing.T) {
@@ -386,21 +419,36 @@ func TestResolveUsernameOldEnvd(t *testing.T) {
 }
 
 func TestResolveUsernameNewEnvd(t *testing.T) {
-	s := &Sandbox{envdVersion: [3]int{0, 1, 5}}
+	// envdVersionDefaultUser = 0.4.0，0.4.0 及以上才不注入默认 user
+	s := &Sandbox{envdVersion: [3]int{0, 4, 0}}
 	got := s.resolveUsername("")
 	if got != "" {
-		t.Errorf("expected empty for new envd, got %q", got)
+		t.Errorf("expected empty for new envd (>= 0.4.0), got %q", got)
+	}
+}
+
+func TestResolveUsernameNewEnvdOld(t *testing.T) {
+	// 0.1.5 < 0.4.0，仍应返回 "user"
+	s := &Sandbox{envdVersion: [3]int{0, 1, 5}}
+	got := s.resolveUsername("")
+	if got != "user" {
+		t.Errorf("expected 'user' for envd < 0.4.0, got %q", got)
 	}
 }
 
 func TestSupportsStdin(t *testing.T) {
-	s1 := &Sandbox{envdVersion: [3]int{0, 1, 0}}
+	// envdVersionStdin = 0.3.0
+	s1 := &Sandbox{envdVersion: [3]int{0, 2, 9}}
 	if s1.supportsStdin() {
-		t.Error("0.1.0 should not support stdin")
+		t.Error("0.2.9 should not support stdin (< 0.3.0)")
 	}
-	s2 := &Sandbox{envdVersion: [3]int{0, 1, 2}}
+	s2 := &Sandbox{envdVersion: [3]int{0, 3, 0}}
 	if !s2.supportsStdin() {
-		t.Error("0.1.2 should support stdin")
+		t.Error("0.3.0 should support stdin")
+	}
+	s3 := &Sandbox{envdVersion: [3]int{0, 1, 2}}
+	if s3.supportsStdin() {
+		t.Error("0.1.2 should NOT support stdin with new constant (>= 0.3.0 required)")
 	}
 }
 
@@ -786,10 +834,11 @@ func TestProcessDataEventUnmarshalJSONEmpty(t *testing.T) {
 	}
 }
 
-// === sendInputRequest.MarshalJSON 测试 ===
+// === sendInputRequest / proto JSON 结构测试 ===
 
-func TestSendInputRequestMarshalJSON(t *testing.T) {
-	req := sendInputRequest{PID: 42, Input: []byte("hello")}
+func TestSendInputRequestStdinJSON(t *testing.T) {
+	// 与 Python SDK 对齐：应生成嵌套 process 字段和 input.stdin 字段
+	req := newSendStdinRequest(42, []byte("hello"))
 	data, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
@@ -797,12 +846,73 @@ func TestSendInputRequestMarshalJSON(t *testing.T) {
 	var decoded map[string]interface{}
 	json.Unmarshal(data, &decoded)
 
-	if int(decoded["pid"].(float64)) != 42 {
-		t.Errorf("PID: got %v", decoded["pid"])
+	// 验证嵌套 process 字段
+	process, ok := decoded["process"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested process field, got: %v", decoded)
+	}
+	if int(process["pid"].(float64)) != 42 {
+		t.Errorf("process.pid: got %v, want 42", process["pid"])
+	}
+	// 验证 input.stdin 字段（base64 编码）
+	input, ok := decoded["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested input field, got: %v", decoded)
 	}
 	// "hello" 的 base64 编码 = "aGVsbG8="
-	if decoded["input"] != "aGVsbG8=" {
-		t.Errorf("input: got %q, want 'aGVsbG8='", decoded["input"])
+	if input["stdin"] != "aGVsbG8=" {
+		t.Errorf("input.stdin: got %q, want 'aGVsbG8='", input["stdin"])
+	}
+}
+
+func TestSendPtyRequestJSON(t *testing.T) {
+	// PTY 输入应使用 input.pty 字段
+	req := newSendPtyRequest(99, []byte("data"))
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(data, &decoded)
+
+	process, ok := decoded["process"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested process field, got: %v", decoded)
+	}
+	if int(process["pid"].(float64)) != 99 {
+		t.Errorf("process.pid: got %v, want 99", process["pid"])
+	}
+	input, ok := decoded["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested input field, got: %v", decoded)
+	}
+	// "data" base64 = "ZGF0YQ=="
+	if input["pty"] != "ZGF0YQ==" {
+		t.Errorf("input.pty: got %q, want 'ZGF0YQ=='", input["pty"])
+	}
+	if input["stdin"] != nil {
+		t.Error("input.stdin should be absent for PTY request")
+	}
+}
+
+func TestSendSignalRequestJSON(t *testing.T) {
+	// 验证嵌套 process 字段
+	req := sendSignalRequest{Process: processSelector{PID: 10}, Signal: "SIGNAL_SIGKILL"}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(data, &decoded)
+	process, ok := decoded["process"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested process field")
+	}
+	if int(process["pid"].(float64)) != 10 {
+		t.Errorf("process.pid: got %v, want 10", process["pid"])
+	}
+	if decoded["signal"] != "SIGNAL_SIGKILL" {
+		t.Errorf("signal: got %v", decoded["signal"])
 	}
 }
 

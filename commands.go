@@ -55,9 +55,9 @@ type ptySizeMsg struct {
 	Rows int `json:"rows"`
 }
 
-// connectRequest 是连接到已有进程的 RPC 请求。
+// connectRequest 是连接已有进程的 RPC 请求（与 protobuf ConnectRequest 对齐）。
 type connectRequest struct {
-	PID int `json:"pid"`
+	Process processSelector `json:"process"`
 }
 
 // processEvent 是进程事件的包装结构。
@@ -137,32 +137,50 @@ type processInfoRaw struct {
 	Config processConfig `json:"config"`
 }
 
-// sendSignalRequest 是发送信号的 RPC 请求。
-type sendSignalRequest struct {
-	PID    int    `json:"pid"`
-	Signal string `json:"signal"`
-}
-
-// sendInputRequest 是发送标准输入数据的 RPC 请求。
-type sendInputRequest struct {
-	PID   int    `json:"pid"`
-	Input []byte `json:"input"` // JSON 中将进行 base64 编码
-}
-
-// MarshalJSON 自定义序列化，将 input 字段编码为 base64。
-func (r sendInputRequest) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		PID   int    `json:"pid"`
-		Input string `json:"input"`
-	}{
-		PID:   r.PID,
-		Input: base64.StdEncoding.EncodeToString(r.Input),
-	})
-}
-
-// closeStdinRequest 是关闭标准输入的 RPC 请求。
-type closeStdinRequest struct {
+// processSelector 表示进程选择器，与 protobuf ProcessSelector 对齐。
+// 与 Python SDK 对齐：所有进程操作请求都使用嵌套的 process 字段。
+type processSelector struct {
 	PID int `json:"pid"`
+}
+
+// processInputData 表示进程输入数据，支持 stdin 和 pty 两种字段。
+// stdin 用于普通命令标准输入，pty 用于伪终端输入。
+type processInputData struct {
+	Stdin string `json:"stdin,omitempty"` // base64 编码，用于普通命令
+	Pty   string `json:"pty,omitempty"`   // base64 编码，用于 PTY
+}
+
+// sendSignalRequest 是发送信号的 RPC 请求（与 protobuf SendSignalRequest 对齐）。
+type sendSignalRequest struct {
+	Process processSelector `json:"process"`
+	Signal  string          `json:"signal"`
+}
+
+// sendInputRequest 是发送输入数据的 RPC 请求（与 protobuf SendInputRequest 对齐）。
+type sendInputRequest struct {
+	Process processSelector  `json:"process"`
+	Input   processInputData `json:"input"`
+}
+
+// newSendStdinRequest 构造用于普通命令 stdin 的发送输入请求。
+func newSendStdinRequest(pid int, data []byte) sendInputRequest {
+	return sendInputRequest{
+		Process: processSelector{PID: pid},
+		Input:   processInputData{Stdin: base64.StdEncoding.EncodeToString(data)},
+	}
+}
+
+// newSendPtyRequest 构造用于 PTY 的发送输入请求。
+func newSendPtyRequest(pid int, data []byte) sendInputRequest {
+	return sendInputRequest{
+		Process: processSelector{PID: pid},
+		Input:   processInputData{Pty: base64.StdEncoding.EncodeToString(data)},
+	}
+}
+
+// closeStdinRequest 是关闭标准输入的 RPC 请求（与 protobuf CloseStdinRequest 对齐）。
+type closeStdinRequest struct {
+	Process processSelector `json:"process"`
 }
 
 // Run 在前台执行命令，阻塞直到命令完成并返回结果。
@@ -209,7 +227,7 @@ func (c *Commands) Start(ctx context.Context, cmd string, opts ...CommandOption)
 func (c *Commands) Connect(ctx context.Context, pid int, opts ...CommandOption) (*CommandHandle, error) {
 	cfg := c.applyOpts(opts)
 
-	req := connectRequest{PID: pid}
+	req := connectRequest{Process: processSelector{PID: pid}}
 	timeoutMs := 0
 	if cfg.timeout > 0 {
 		timeoutMs = cfg.timeout * 1000
@@ -263,10 +281,14 @@ func (c *Commands) List(ctx context.Context) ([]ProcessInfo, error) {
 }
 
 // Kill 向进程发送 SIGKILL 信号。
+// 与 Python SDK 对齐：进程不存在（not_found）时返回 (false, nil)。
 func (c *Commands) Kill(ctx context.Context, pid int) (bool, error) {
-	req := sendSignalRequest{PID: pid, Signal: "SIGNAL_SIGKILL"}
+	req := sendSignalRequest{Process: processSelector{PID: pid}, Signal: "SIGNAL_SIGKILL"}
 	err := c.rpc.CallUnary(ctx, processServiceName, "SendSignal", req, nil)
 	if err != nil {
+		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
+			return false, nil
+		}
 		return false, &SandboxError{Message: fmt.Sprintf("failed to kill process %d: %v", pid, err), Cause: err}
 	}
 	return true, nil
@@ -274,7 +296,7 @@ func (c *Commands) Kill(ctx context.Context, pid int) (bool, error) {
 
 // SendStdin 向进程的标准输入发送数据。
 func (c *Commands) SendStdin(ctx context.Context, pid int, data string) error {
-	req := sendInputRequest{PID: pid, Input: []byte(data)}
+	req := newSendStdinRequest(pid, []byte(data))
 	err := c.rpc.CallUnary(ctx, processServiceName, "SendInput", req, nil)
 	if err != nil {
 		return &SandboxError{Message: fmt.Sprintf("failed to send stdin to process %d: %v", pid, err), Cause: err}
@@ -295,38 +317,32 @@ func (c *Commands) applyOpts(opts []CommandOption) *commandConfig {
 func (c *Commands) startStream(ctx context.Context, cmd string, cfg *commandConfig, isPty bool) (*connectrpc.StreamReader, int, error) {
 	user := c.sandbox.resolveUsername(cfg.user)
 
-	cwd := cfg.cwd
-	if cwd == "" {
-		cwd = "/home/user"
-	}
-
-	envs := cfg.envVars
-
+	// 与 Python SDK 对齐：不强制设置默认 cwd，由服务端决定（通常为用户 home 目录）。
 	req := startRequest{
 		Process: processConfig{
 			Cmd:  "/bin/bash",
 			Args: []string{"-l", "-c", cmd},
-			Envs: envs,
-			Cwd:  cwd,
+			Envs: cfg.envVars,
+			Cwd:  cfg.cwd,
 		},
 		Stdin: cfg.stdin && c.sandbox.supportsStdin(),
 	}
 
-	if user != "" {
-		if req.Process.Envs == nil {
-			req.Process.Envs = make(map[string]string)
-		}
-		req.Process.Envs["USER"] = user
-		req.Process.Cmd = "su"
-		req.Process.Args = []string{"-", user, "-c", cmd}
+	// 与 Python SDK 对齐：默认超时 60s；显式 WithCommandTimeout(0) 表示无限制。
+	timeout := cfg.timeout
+	if !cfg.timeoutSet {
+		timeout = DefaultCommandTimeout
 	}
-
 	timeoutMs := 0
-	if cfg.timeout > 0 {
-		timeoutMs = cfg.timeout * 1000
+	if timeout > 0 {
+		timeoutMs = timeout * 1000
 	}
 
-	stream, err := c.rpc.CallServerStream(ctx, processServiceName, "Start", req, timeoutMs)
+	// 与 Python SDK 对齐：通过 Authorization: Basic 头传递用户身份，
+	// 而不是用 su 命令切换用户（Python: authentication_header(version, user)）。
+	authHeader := buildAuthHeader(user)
+
+	stream, err := c.rpc.CallServerStream(ctx, processServiceName, "Start", req, timeoutMs, authHeader)
 	if err != nil {
 		return nil, 0, &SandboxError{Message: fmt.Sprintf("failed to start command: %v", err), Cause: err}
 	}
@@ -433,7 +449,7 @@ type CommandHandle struct {
 	mu      sync.Mutex         // 互斥锁，保护并发访问
 	stdout  strings.Builder    // 标准输出缓冲
 	stderr  strings.Builder    // 标准错误缓冲
-	done    chan struct{}       // 命令完成信号通道
+	done    chan struct{}      // 命令完成信号通道
 	result  *CommandResult     // 命令执行结果
 	err     error              // 执行错误
 	sandbox *Sandbox           // 所属沙箱
@@ -474,12 +490,12 @@ func (h *CommandHandle) Wait(ctx context.Context) (*CommandResult, error) {
 
 // Kill 向命令进程发送 SIGKILL 信号。
 func (h *CommandHandle) Kill(ctx context.Context) error {
-	req := sendSignalRequest{PID: h.PID, Signal: "SIGNAL_SIGKILL"}
+	req := sendSignalRequest{Process: processSelector{PID: h.PID}, Signal: "SIGNAL_SIGKILL"}
 	return h.rpc.CallUnary(ctx, processServiceName, "SendSignal", req, nil)
 }
 
 // SendStdin 向命令的标准输入发送数据。
 func (h *CommandHandle) SendStdin(ctx context.Context, data string) error {
-	req := sendInputRequest{PID: h.PID, Input: []byte(data)}
+	req := newSendStdinRequest(h.PID, []byte(data))
 	return h.rpc.CallUnary(ctx, processServiceName, "SendInput", req, nil)
 }

@@ -17,6 +17,27 @@ import (
 	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
+// watchDirRequest 是 WatchDir 流式 RPC 的请求结构。
+type watchDirRequest struct {
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive,omitempty"`
+}
+
+// watchDirStartEvent 是 WatchDir 流的首个事件（start 类型）。
+type watchDirStartEvent struct{}
+
+// watchDirFilesystemEvent 是 WatchDir 流的文件系统事件。
+type watchDirFilesystemEvent struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// watchDirResponse 是 WatchDir 流式 RPC 的响应帧，与 Python SDK WatchDirResponse 对齐。
+type watchDirResponse struct {
+	Start      *watchDirStartEvent      `json:"start,omitempty"`
+	Filesystem *watchDirFilesystemEvent `json:"filesystem,omitempty"`
+}
+
 // filesystemServiceName 是文件系统 RPC 服务的名称。
 const filesystemServiceName = "e2b.filesystem.v1.FilesystemService"
 
@@ -129,8 +150,14 @@ func (f *Filesystem) WriteFiles(ctx context.Context, files []WriteEntry, opts ..
 	writer.Close()
 
 	uploadURL := f.sandbox.envdAPIURL + "/files"
+	sep := "?"
+	// 与 Python SDK 对齐：单文件上传时在查询参数中也传入 path，确保服务端正确定位目标路径。
+	if len(files) == 1 {
+		uploadURL += sep + "path=" + url.QueryEscape(files[0].Path)
+		sep = "&"
+	}
 	if user != "" {
-		uploadURL += "?username=" + url.QueryEscape(user)
+		uploadURL += sep + "username=" + url.QueryEscape(user)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &buf)
@@ -186,13 +213,13 @@ type listDirResponse struct {
 type entryInfoRaw struct {
 	Name          string `json:"name"`
 	Path          string `json:"path"`
-	Type          string `json:"type"`                    // "FILE_TYPE_FILE" 或 "FILE_TYPE_DIRECTORY"
-	Size          string `json:"size"`                    // JSON 中 int64 以字符串表示
+	Type          string `json:"type"` // "FILE_TYPE_FILE" 或 "FILE_TYPE_DIRECTORY"
+	Size          string `json:"size"` // JSON 中 int64 以字符串表示
 	Permissions   string `json:"permissions"`
 	Mode          int    `json:"mode"`
 	Owner         string `json:"owner"`
 	Group         string `json:"group"`
-	ModifiedTime  string `json:"modifiedTime"`            // RFC 3339 格式
+	ModifiedTime  string `json:"modifiedTime"` // RFC 3339 格式
 	SymlinkTarget string `json:"symlinkTarget,omitempty"`
 }
 
@@ -262,38 +289,6 @@ type moveResponse struct {
 	Entry entryInfoRaw `json:"entry"`
 }
 
-// createWatcherRequest 是创建目录监视器的 RPC 请求。
-type createWatcherRequest struct {
-	Path      string `json:"path"`
-	Recursive bool   `json:"recursive,omitempty"`
-}
-
-// createWatcherResponse 是创建目录监视器的 RPC 响应。
-type createWatcherResponse struct {
-	WatcherID string `json:"watcherId"`
-}
-
-// getWatcherEventsRequest 是获取监视器事件的 RPC 请求。
-type getWatcherEventsRequest struct {
-	WatcherID string `json:"watcherId"`
-}
-
-// filesystemEventRaw 是原始文件系统事件结构。
-type filesystemEventRaw struct {
-	Name string `json:"name"`
-	Type string `json:"type"` // "EVENT_TYPE_CREATE" etc.
-}
-
-// getWatcherEventsResponse 是获取监视器事件的 RPC 响应。
-type getWatcherEventsResponse struct {
-	Events []filesystemEventRaw `json:"events"`
-}
-
-// removeWatcherRequest 是移除目录监视器的 RPC 请求。
-type removeWatcherRequest struct {
-	WatcherID string `json:"watcherId"`
-}
-
 // List 列出目录中的条目。
 func (f *Filesystem) List(ctx context.Context, path string, opts ...FilesystemOption) ([]EntryInfo, error) {
 	cfg := f.applyOpts(opts)
@@ -301,10 +296,12 @@ func (f *Filesystem) List(ctx context.Context, path string, opts ...FilesystemOp
 	if depth <= 0 {
 		depth = 1
 	}
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
 
 	req := listDirRequest{Path: path, Depth: depth}
 	var resp listDirResponse
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "ListDir", req, &resp)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "ListDir", req, &resp, authHeader)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to list directory: %v", err), Cause: err}
 	}
@@ -318,8 +315,12 @@ func (f *Filesystem) List(ctx context.Context, path string, opts ...FilesystemOp
 
 // MakeDir 创建目录。创建成功返回 true，目录已存在返回 false。
 func (f *Filesystem) MakeDir(ctx context.Context, path string, opts ...FilesystemOption) (bool, error) {
+	cfg := f.applyOpts(opts)
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
 	req := makeDirRequest{Path: path}
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "MakeDir", req, nil)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "MakeDir", req, nil, authHeader)
 	if err != nil {
 		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeAlreadyExists {
 			return false, nil
@@ -331,9 +332,13 @@ func (f *Filesystem) MakeDir(ctx context.Context, path string, opts ...Filesyste
 
 // Exists 检查路径是否存在。
 func (f *Filesystem) Exists(ctx context.Context, path string, opts ...FilesystemOption) (bool, error) {
+	cfg := f.applyOpts(opts)
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
 	req := statRequest{Path: path}
 	var resp statResponse
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Stat", req, &resp)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Stat", req, &resp, authHeader)
 	if err != nil {
 		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
 			return false, nil
@@ -345,9 +350,13 @@ func (f *Filesystem) Exists(ctx context.Context, path string, opts ...Filesystem
 
 // GetInfo 返回文件或目录的详细信息。
 func (f *Filesystem) GetInfo(ctx context.Context, path string, opts ...FilesystemOption) (*EntryInfo, error) {
+	cfg := f.applyOpts(opts)
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
 	req := statRequest{Path: path}
 	var resp statResponse
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Stat", req, &resp)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Stat", req, &resp, authHeader)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to stat path: %v", err), Cause: err}
 	}
@@ -357,8 +366,12 @@ func (f *Filesystem) GetInfo(ctx context.Context, path string, opts ...Filesyste
 
 // Remove 删除文件或目录。
 func (f *Filesystem) Remove(ctx context.Context, path string, opts ...FilesystemOption) error {
+	cfg := f.applyOpts(opts)
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
 	req := removeRequest{Path: path}
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Remove", req, nil)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Remove", req, nil, authHeader)
 	if err != nil {
 		return &SandboxError{Message: fmt.Sprintf("failed to remove path: %v", err), Cause: err}
 	}
@@ -367,9 +380,13 @@ func (f *Filesystem) Remove(ctx context.Context, path string, opts ...Filesystem
 
 // Rename 移动或重命名文件或目录。
 func (f *Filesystem) Rename(ctx context.Context, oldPath, newPath string, opts ...FilesystemOption) (*EntryInfo, error) {
+	cfg := f.applyOpts(opts)
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
 	req := moveRequest{Source: oldPath, Destination: newPath}
 	var resp moveResponse
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Move", req, &resp)
+	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Move", req, &resp, authHeader)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to rename: %v", err), Cause: err}
 	}
@@ -377,28 +394,84 @@ func (f *Filesystem) Rename(ctx context.Context, oldPath, newPath string, opts .
 	return &info, nil
 }
 
-// --- 目录监听（轮询模式） ---
+// --- 目录监听（流式模式，与 Python SDK 对齐） ---
 
-// WatchDir 创建目录监视器并返回用于轮询事件的句柄。
-func (f *Filesystem) WatchDir(ctx context.Context, path string, opts ...FilesystemOption) (*WatchHandle, error) {
+// WatchDir 使用流式 WatchDir RPC 监听目录变更事件。
+// onEvent 在每个文件系统事件到达时被调用（在后台 goroutine 中执行）。
+// 与 Python SDK 对齐：使用 WatchDir 流式 RPC，而非轮询 CreateWatcher/GetWatcherEvents。
+func (f *Filesystem) WatchDir(ctx context.Context, path string, onEvent func(FilesystemEvent), opts ...FilesystemOption) (*WatchHandle, error) {
 	cfg := f.applyOpts(opts)
 
 	if cfg.recursive && !f.sandbox.supportsRecursiveWatch() {
 		return nil, &SandboxError{Message: "recursive watch requires envd >= 0.1.4"}
 	}
 
-	req := createWatcherRequest{Path: path, Recursive: cfg.recursive}
-	var resp createWatcherResponse
-	err := f.rpc.CallUnary(ctx, filesystemServiceName, "CreateWatcher", req, &resp)
-	if err != nil {
-		return nil, &SandboxError{Message: fmt.Sprintf("failed to create watcher: %v", err), Cause: err}
+	user := f.sandbox.resolveUsername(cfg.user)
+	authHeader := buildAuthHeader(user)
+
+	timeoutMs := 0
+	if cfg.watchTimeout > 0 {
+		timeoutMs = cfg.watchTimeout * 1000
 	}
 
-	return &WatchHandle{
-		watcherID: resp.WatcherID,
-		rpc:       f.rpc,
-		closed:    false,
-	}, nil
+	req := watchDirRequest{Path: path, Recursive: cfg.recursive}
+
+	watchCtx, cancel := context.WithCancel(ctx)
+	stream, err := f.rpc.CallServerStream(watchCtx, filesystemServiceName, "WatchDir", req, timeoutMs, authHeader)
+	if err != nil {
+		cancel()
+		return nil, &SandboxError{Message: fmt.Sprintf("failed to start watch: %v", err), Cause: err}
+	}
+
+	// 读取首个事件（start 事件）
+	var firstEvent watchDirResponse
+	if err := stream.Next(&firstEvent); err != nil {
+		stream.Close()
+		cancel()
+		return nil, &SandboxError{Message: fmt.Sprintf("failed to read watch start event: %v", err), Cause: err}
+	}
+	if firstEvent.Start == nil {
+		stream.Close()
+		cancel()
+		return nil, &SandboxError{Message: "expected start event from WatchDir stream"}
+	}
+
+	handle := &WatchHandle{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+
+	go func() {
+		defer close(handle.done)
+		defer stream.Close()
+		defer cancel()
+
+		for {
+			var event watchDirResponse
+			err := stream.Next(&event)
+			if err != nil {
+				if err != io.EOF {
+					handle.mu.Lock()
+					handle.err = &SandboxError{Message: fmt.Sprintf("watch stream error: %v", err), Cause: err}
+					handle.mu.Unlock()
+					if cfg.onExit != nil {
+						cfg.onExit(handle.err)
+					}
+				}
+				return
+			}
+
+			if event.Filesystem != nil {
+				fsEvent := FilesystemEvent{
+					Name: event.Filesystem.Name,
+					Type: mapEventType(event.Filesystem.Type),
+				}
+				onEvent(fsEvent)
+			}
+		}
+	}()
+
+	return handle, nil
 }
 
 // applyOpts 应用文件系统选项并返回配置。
@@ -410,12 +483,29 @@ func (f *Filesystem) applyOpts(opts []FilesystemOption) *filesystemConfig {
 	return cfg
 }
 
-// WatchHandle 表示使用轮询模式的文件系统目录监视器句柄。
+// WatchHandle 表示一个正在运行的目录监听句柄（流式模式）。
 type WatchHandle struct {
-	watcherID string             // 监视器 ID
-	rpc       *connectrpc.Client // RPC 客户端
-	mu        sync.Mutex         // 保护 closed 字段
-	closed    bool               // 是否已关闭
+	cancel context.CancelFunc // 取消流式 RPC 的函数
+	done   chan struct{}      // 后台 goroutine 结束信号
+	mu     sync.Mutex         // 保护 err 字段
+	err    error              // 监听过程中的错误
+}
+
+// Stop 停止目录监听，取消底层流式连接。
+func (w *WatchHandle) Stop() {
+	w.cancel()
+}
+
+// Wait 阻塞等待监听 goroutine 结束，返回监听过程中发生的错误（若有）。
+func (w *WatchHandle) Wait(ctx context.Context) error {
+	select {
+	case <-w.done:
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // mapEventType 将 protobuf 事件类型字符串映射为 FilesystemEventType。
@@ -434,48 +524,4 @@ func mapEventType(raw string) FilesystemEventType {
 	default:
 		return FilesystemEventType(strings.ToLower(strings.TrimPrefix(raw, "EVENT_TYPE_")))
 	}
-}
-
-// GetNewEvents 返回自上次调用以来的新文件系统事件。
-func (w *WatchHandle) GetNewEvents(ctx context.Context) ([]FilesystemEvent, error) {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil, &SandboxError{Message: "the watcher is already stopped"}
-	}
-	w.mu.Unlock()
-
-	req := getWatcherEventsRequest{WatcherID: w.watcherID}
-	var resp getWatcherEventsResponse
-	err := w.rpc.CallUnary(ctx, filesystemServiceName, "GetWatcherEvents", req, &resp)
-	if err != nil {
-		return nil, &SandboxError{Message: fmt.Sprintf("failed to get watcher events: %v", err), Cause: err}
-	}
-
-	events := make([]FilesystemEvent, len(resp.Events))
-	for i, e := range resp.Events {
-		events[i] = FilesystemEvent{
-			Name: e.Name,
-			Type: mapEventType(e.Type),
-		}
-	}
-	return events, nil
-}
-
-// Stop 移除目录监视器。
-func (w *WatchHandle) Stop(ctx context.Context) error {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil
-	}
-	w.closed = true
-	w.mu.Unlock()
-
-	req := removeWatcherRequest{WatcherID: w.watcherID}
-	err := w.rpc.CallUnary(ctx, filesystemServiceName, "RemoveWatcher", req, nil)
-	if err != nil {
-		return &SandboxError{Message: fmt.Sprintf("failed to remove watcher: %v", err), Cause: err}
-	}
-	return nil
 }

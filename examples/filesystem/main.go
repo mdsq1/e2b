@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
+	"time"
 
 	e2b "github.com/mdsq1/e2b"
 )
@@ -110,23 +112,28 @@ func main() {
 
 	// === 监听目录 ===
 	fmt.Println("=== WatchDir ===")
-	watcher, err := sbx.Files.WatchDir(ctx, "/tmp/mydir")
+	var watchMu sync.Mutex
+	var watchEvents []e2b.FilesystemEvent
+	watcher, err := sbx.Files.WatchDir(ctx, "/tmp/mydir", func(ev e2b.FilesystemEvent) {
+		watchMu.Lock()
+		watchEvents = append(watchEvents, ev)
+		watchMu.Unlock()
+		fmt.Printf("  event: %s %s\n", ev.Type, ev.Name)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer watcher.Stop(ctx)
+	defer watcher.Stop()
 
 	// 创建文件以触发事件
 	_, _ = sbx.Files.Write(ctx, "/tmp/mydir/watched.txt", "trigger")
 
-	events, err := watcher.GetNewEvents(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Watch events: %d\n", len(events))
-	for _, ev := range events {
-		fmt.Printf("  %s: %s\n", ev.Type, ev.Name)
-	}
+	time.Sleep(1 * time.Second)
+	watcher.Stop()
+
+	watchMu.Lock()
+	fmt.Printf("Watch events: %d\n", len(watchEvents))
+	watchMu.Unlock()
 
 	// === 签名 URL ===
 	fmt.Println("=== Signed URLs ===")

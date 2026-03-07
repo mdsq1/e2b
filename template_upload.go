@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -40,7 +41,13 @@ func readDockerignore(contextPath string) []string {
 // shouldIgnore checks whether a relative path matches any of the ignore patterns.
 // Supports simple globs via filepath.Match and recursive ** patterns.
 func shouldIgnore(relPath string, ignorePatterns []string) bool {
+	// Normalize to forward slashes for cross-platform consistency.
+	// Pattern authors always write '/' (e.g. "node_modules/**") regardless of OS.
+	relPath = filepath.ToSlash(relPath)
+
 	for _, pattern := range ignorePatterns {
+		pattern = filepath.ToSlash(pattern)
+
 		// Handle ** recursive patterns
 		if strings.Contains(pattern, "**") {
 			// "**/foo" matches "foo" at any depth
@@ -48,14 +55,14 @@ func shouldIgnore(relPath string, ignorePatterns []string) bool {
 			suffix := strings.TrimPrefix(pattern, "**/")
 			if suffix != pattern {
 				// Pattern was **/X — match X against basename or tail of path
-				if matched, _ := filepath.Match(suffix, filepath.Base(relPath)); matched {
+				if matched, _ := path.Match(suffix, path.Base(relPath)); matched {
 					return true
 				}
 				// Also try matching against each path suffix
-				parts := strings.Split(relPath, string(filepath.Separator))
+				parts := strings.Split(relPath, "/")
 				for i := range parts {
-					tail := strings.Join(parts[i:], string(filepath.Separator))
-					if matched, _ := filepath.Match(suffix, tail); matched {
+					tail := strings.Join(parts[i:], "/")
+					if matched, _ := path.Match(suffix, tail); matched {
 						return true
 					}
 				}
@@ -63,7 +70,7 @@ func shouldIgnore(relPath string, ignorePatterns []string) bool {
 			prefix := strings.TrimSuffix(pattern, "/**")
 			if prefix != pattern {
 				// Pattern was X/** — match if path starts with X/
-				if strings.HasPrefix(relPath, prefix+string(filepath.Separator)) || relPath == prefix {
+				if strings.HasPrefix(relPath, prefix+"/") || relPath == prefix {
 					return true
 				}
 			}

@@ -41,9 +41,9 @@ const (
 
 // BuildInfo 包含已构建模板的信息。
 type BuildInfo struct {
-	TemplateID string   `json:"templateId"`    // 模板 ID
-	BuildID    string   `json:"buildId"`       // 构建 ID
-	Name       string   `json:"name"`          // 模板名称
+	TemplateID string   `json:"templateId"`     // 模板 ID
+	BuildID    string   `json:"buildId"`        // 构建 ID
+	Name       string   `json:"name"`           // 模板名称
 	Tags       []string `json:"tags,omitempty"` // 标签列表
 }
 
@@ -332,11 +332,13 @@ func (t *TemplateBuilder) FromGCPRegistry(image, serviceAccountJSON string) *Tem
 // validateRelativePath 检查 src 是否为相对路径且未逃逸上下文目录。
 // 防止路径遍历攻击。
 func validateRelativePath(src string) error {
-	if filepath.IsAbs(src) {
+	// filepath.IsAbs は Windows では "/" を絶対パスと認識しないため、
+	// Unix スタイルの絶対パス（"/" で始まる）も明示的に拒否する。
+	if filepath.IsAbs(src) || strings.HasPrefix(src, "/") {
 		return fmt.Errorf("invalid source path %q: absolute paths are not allowed, use a relative path within the context directory", src)
 	}
 	normalized := filepath.Clean(src)
-	if normalized == ".." || strings.HasPrefix(normalized, ".."+string(filepath.Separator)) {
+	if normalized == ".." || strings.HasPrefix(normalized, ".."+string(filepath.Separator)) || strings.HasPrefix(normalized, "../") {
 		return fmt.Errorf("invalid source path %q: path escapes the context directory, the path must stay within the context directory", src)
 	}
 	return nil
@@ -1113,12 +1115,12 @@ func applyBuildOpts(opts []BuildOption) *buildConfig {
 
 // buildTemplateRequest 是发起模板构建的请求体。
 type buildTemplateRequest struct {
-	Alias      string        `json:"alias,omitempty"`      // 模板名称/别名
-	BuildDesc  templateData  `json:"buildDescription"`     // 构建描述
-	CPUCount   int           `json:"cpuCount,omitempty"`   // CPU 数量
-	MemoryMB   int           `json:"memoryMB,omitempty"`   // 内存限制（MB）
-	StartCmd   string        `json:"startCmd,omitempty"`   // 启动命令
-	Tags       []string      `json:"tags,omitempty"`       // 标签列表
+	Alias     string       `json:"alias,omitempty"`    // 模板名称/别名
+	BuildDesc templateData `json:"buildDescription"`   // 构建描述
+	CPUCount  int          `json:"cpuCount,omitempty"` // CPU 数量
+	MemoryMB  int          `json:"memoryMB,omitempty"` // 内存限制（MB）
+	StartCmd  string       `json:"startCmd,omitempty"` // 启动命令
+	Tags      []string     `json:"tags,omitempty"`     // 标签列表
 }
 
 // buildTemplateResponse 是发起模板构建的响应。
@@ -1129,12 +1131,12 @@ type buildTemplateResponse struct {
 
 // buildStatusAPIResponse 是构建状态的原始 API 响应。
 type buildStatusAPIResponse struct {
-	TemplateID string             `json:"templateID"`           // 模板 ID
-	BuildID    string             `json:"buildID"`              // 构建 ID
+	TemplateID string              `json:"templateID"`           // 模板 ID
+	BuildID    string              `json:"buildID"`              // 构建 ID
 	Status     TemplateBuildStatus `json:"status"`               // 构建状态
-	Logs       []string           `json:"logs"`                 // 日志行
-	LogEntries []LogEntry         `json:"logEntries,omitempty"` // 结构化日志条目
-	Reason     *BuildStatusReason `json:"reason,omitempty"`     // 状态原因
+	Logs       []string            `json:"logs"`                 // 日志行
+	LogEntries []LogEntry          `json:"logEntries,omitempty"` // 结构化日志条目
+	Reason     *BuildStatusReason  `json:"reason,omitempty"`     // 状态原因
 }
 
 // === 构建 API 方法 ===
@@ -1156,11 +1158,11 @@ func (c *Client) BuildTemplate(ctx context.Context, template *TemplateBuilder, n
 	}
 
 	reqBody := buildTemplateRequest{
-		Alias:    name,
+		Alias:     name,
 		BuildDesc: data,
-		CPUCount: cfg.cpuCount,
-		MemoryMB: cfg.memoryMB,
-		Tags:     cfg.tags,
+		CPUCount:  cfg.cpuCount,
+		MemoryMB:  cfg.memoryMB,
+		Tags:      cfg.tags,
 	}
 
 	var resp buildTemplateResponse

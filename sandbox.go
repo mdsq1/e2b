@@ -2,10 +2,13 @@ package e2b
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/mdsq1/e2b/internal/connectrpc"
 )
@@ -32,7 +35,8 @@ type Sandbox struct {
 }
 
 // Kill 销毁当前沙箱。
-func (s *Sandbox) Kill(ctx context.Context) error {
+// 与 Python SDK 对齐：返回 (true, nil) 成功，(false, nil) 表示沙箱未找到。
+func (s *Sandbox) Kill(ctx context.Context) (bool, error) {
 	return s.client.KillSandbox(ctx, s.ID)
 }
 
@@ -46,14 +50,68 @@ func (s *Sandbox) GetInfo(ctx context.Context) (*SandboxInfo, error) {
 	return s.client.GetSandboxInfo(ctx, s.ID)
 }
 
+// envd 版本阈值（与 Python SDK 对齐）。
+var (
+	envdVersionMetrics     = [3]int{0, 1, 5} // 支持 metrics API 的最低版本（Python: 0.1.5）
+	envdVersionDiskMetrics = [3]int{0, 2, 4} // 支持磁盘 metrics 的最低版本（Python: 0.2.4）
+)
+
 // GetMetrics 获取当前沙箱的资源使用指标。
-func (s *Sandbox) GetMetrics(ctx context.Context) ([]SandboxMetrics, error) {
-	var resp metricsResponse
-	err := s.client.doRequest(ctx, http.MethodGet, "/sandboxes/"+s.ID+"/metrics", nil, &resp)
+// 与 Python SDK 对齐：支持可选的 start/end 时间范围过滤，以及 envd 版本检查。
+func (s *Sandbox) GetMetrics(ctx context.Context, opts ...MetricsOption) ([]SandboxMetrics, error) {
+	// 与 Python SDK 对齐：envd < 0.1.5 不支持 metrics，直接报错
+	if versionLessThan(s.envdVersion, envdVersionMetrics) {
+		return nil, &SandboxError{Message: "metrics are not supported in this version of the sandbox, please rebuild your template"}
+	}
+	// 与 Python SDK 对齐：envd < 0.2.4 不支持磁盘 metrics，记录告警
+	if versionLessThan(s.envdVersion, envdVersionDiskMetrics) {
+		log.Println("[E2B] Disk metrics are not supported in this version of the sandbox, please rebuild the template to get disk metrics.")
+	}
+
+	cfg := &metricsConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	path := "/sandboxes/" + s.ID + "/metrics"
+	sep := "?"
+	if !cfg.start.IsZero() {
+		path += sep + "start=" + fmt.Sprintf("%d", cfg.start.Unix())
+		sep = "&"
+	}
+	if !cfg.end.IsZero() {
+		path += sep + "end=" + fmt.Sprintf("%d", cfg.end.Unix())
+	}
+
+	// 与 Python SDK 对齐：API 直接返回 JSON 数组，而非 {"metrics": [...]}
+	var metrics []SandboxMetrics
+	err := s.client.doRequest(ctx, http.MethodGet, path, nil, &metrics)
 	if err != nil {
 		return nil, err
 	}
-	return resp.Metrics, nil
+	if metrics == nil {
+		return []SandboxMetrics{}, nil
+	}
+	return metrics, nil
+}
+
+// metricsConfig 包含 GetMetrics 的可选参数。
+type metricsConfig struct {
+	start time.Time
+	end   time.Time
+}
+
+// MetricsOption 是 GetMetrics 的函数选项。
+type MetricsOption func(*metricsConfig)
+
+// WithMetricsStart 设置指标查询的开始时间。
+func WithMetricsStart(t time.Time) MetricsOption {
+	return func(c *metricsConfig) { c.start = t }
+}
+
+// WithMetricsEnd 设置指标查询的结束时间。
+func WithMetricsEnd(t time.Time) MetricsOption {
+	return func(c *metricsConfig) { c.end = t }
 }
 
 // Pause 暂停当前沙箱。
@@ -62,20 +120,37 @@ func (s *Sandbox) Pause(ctx context.Context) error {
 }
 
 // IsRunning 通过健康检查请求判断沙箱是否正在运行。
-func (s *Sandbox) IsRunning(ctx context.Context) bool {
+// 与 Python SDK 对齐：
+//   - 502 Bad Gateway → 返回 (false, nil)
+//   - 超时 → 返回 (false, TimeoutError)
+//   - 其他任何 HTTP 响应 → 返回 (true, nil)
+//   - 网络错误（非超时） → 返回 (false, err)
+func (s *Sandbox) IsRunning(ctx context.Context) (bool, error) {
 	healthURL := s.envdAPIURL + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
-		return false
+		return false, &SandboxError{Message: fmt.Sprintf("failed to create health check request: %v", err), Cause: err}
 	}
 	s.setSandboxHeaders(req)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return false
+		// 检查是否为超时错误（context deadline exceeded 或 client timeout）
+		if ctx.Err() != nil {
+			return false, &TimeoutError{SandboxError: SandboxError{Message: "health check timed out", Cause: ctx.Err()}}
+		}
+		// 其他网络错误也可能是超时（http.Client timeout）
+		if isTimeoutError(err) {
+			return false, &TimeoutError{SandboxError: SandboxError{Message: "health check timed out", Cause: err}}
+		}
+		return false, &SandboxError{Message: fmt.Sprintf("health check request failed: %v", err), Cause: err}
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	// 502 表示代理层认为沙箱不可达
+	if resp.StatusCode == http.StatusBadGateway {
+		return false, nil
+	}
+	return true, nil
 }
 
 // GetHost 返回当前沙箱指定端口的主机名。
@@ -111,37 +186,39 @@ func (s *Sandbox) UploadURL(path string, opts ...FileURLOption) string {
 	return s.buildSignedURL(path, "write", cfg)
 }
 
-// buildSignedURL 构建带签名的文件操作 URL。
+// buildSignedURL 构建文件操作 URL。
+// 与 Python SDK 对齐：有 access token 时生成带签名的 URL，否则返回无签名 URL。
 func (s *Sandbox) buildSignedURL(path, operation string, cfg *fileURLConfig) string {
 	user := s.resolveUsername(cfg.user)
-
-	var expSec *int
-	if cfg.expiration > 0 {
-		expSec = &cfg.expiration
-	}
-
-	sig, exp, err := getSignature(path, operation, user, s.envdAccessToken, expSec)
-	if err != nil {
-		return ""
-	}
-
 	u := s.envdAPIURL + "/files"
 	params := url.Values{}
 	params.Set("path", path)
-	params.Set("signature", sig)
 	if user != "" {
 		params.Set("username", user)
 	}
-	if exp != nil {
-		params.Set("signature_expiration", fmt.Sprintf("%d", *exp))
+
+	// 与 Python SDK 对齐：仅在有 access token 时生成签名
+	if s.envdAccessToken != "" {
+		var expSec *int
+		if cfg.expiration > 0 {
+			expSec = &cfg.expiration
+		}
+		sig, exp, err := getSignature(path, operation, user, s.envdAccessToken, expSec)
+		if err == nil {
+			params.Set("signature", sig)
+			if exp != nil {
+				params.Set("signature_expiration", fmt.Sprintf("%d", *exp))
+			}
+		}
 	}
 
 	return u + "?" + params.Encode()
 }
 
 // GetMCPURL 返回当前沙箱的 MCP 端点 URL。
+// 与 Python SDK 对齐：使用 MCPPort (50005) 而非 EnvdPort。
 func (s *Sandbox) GetMCPURL() string {
-	host := s.GetHost(EnvdPort)
+	host := s.GetHost(MCPPort)
 	scheme := "https"
 	if s.client.config.Debug {
 		scheme = "http"
@@ -150,7 +227,7 @@ func (s *Sandbox) GetMCPURL() string {
 }
 
 // GetMCPToken 从沙箱文件系统中读取 MCP 令牌。
-// 此方法需要 Files 子模块已初始化。
+// 与 Python SDK 对齐：使用 user="root" 读取令牌文件（该文件归 root 所有）。
 // 该方法是并发安全的，成功读取后会缓存令牌，失败时允许重试。
 func (s *Sandbox) GetMCPToken(ctx context.Context) (string, error) {
 	s.mcpTokenMu.Lock()
@@ -162,7 +239,7 @@ func (s *Sandbox) GetMCPToken(ctx context.Context) (string, error) {
 	if s.Files == nil {
 		return "", &SandboxError{Message: "filesystem module not initialized"}
 	}
-	token, err := s.Files.Read(ctx, "/etc/mcp-gateway/.token")
+	token, err := s.Files.Read(ctx, "/etc/mcp-gateway/.token", WithFsUser("root"))
 	if err != nil {
 		return "", err
 	}
@@ -179,6 +256,19 @@ func (s *Sandbox) resolveUsername(user string) string {
 		return "user"
 	}
 	return ""
+}
+
+// buildAuthHeader 根据已解析的用户名构建 Authorization: Basic 头。
+// 与 Python SDK 的 authentication_header() 对齐：对 "user:" 进行 Base64 编码。
+// user 应为 resolveUsername() 的返回值；若为空则返回 nil。
+func buildAuthHeader(user string) map[string]string {
+	if user == "" {
+		return nil
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(user + ":"))
+	return map[string]string{
+		"Authorization": "Basic " + encoded,
+	}
 }
 
 // supportsStdin 检查当前 envd 版本是否支持标准输入。
@@ -198,22 +288,30 @@ func (s *Sandbox) newConnectRPCClient() *connectrpc.Client {
 		HTTPClient: s.httpClient,
 		Headers: map[string]string{
 			"X-Access-Token":           s.envdAccessToken,
-			"E2B-Traffic-Access-Token":  s.trafficAccessToken,
+			"E2B-Traffic-Access-Token": s.trafficAccessToken,
 			"E2b-Sandbox-Id":           s.ID,
 			"E2b-Sandbox-Port":         fmt.Sprintf("%d", EnvdPort),
-			"Keepalive-Ping-Interval":  "55",
+			"Keepalive-Ping-Interval":  fmt.Sprintf("%d", KeepalivePingIntervalSec), // 与 Python SDK 对齐: 50s
 		},
 	}
 }
 
 // setSandboxHeaders 为 HTTP 请求设置沙箱相关的认证和标识头。
 func (s *Sandbox) setSandboxHeaders(req *http.Request) {
+	s.setSandboxHeadersWithPort(req, EnvdPort)
+}
+
+// setSandboxHeadersWithPort 为 HTTP 请求设置沙箱相关的认证和标识头，支持自定义端口。
+func (s *Sandbox) setSandboxHeadersWithPort(req *http.Request, port int) {
 	if s.envdAccessToken != "" {
 		req.Header.Set("X-Access-Token", s.envdAccessToken)
+	} else if s.client.config.APIKey != "" {
+		// 360 沙盒网关：envdAccessToken 为空时，fallback 到 API Key 认证
+		req.Header.Set("X-API-Key", s.client.config.APIKey)
 	}
 	if s.trafficAccessToken != "" {
 		req.Header.Set("E2B-Traffic-Access-Token", s.trafficAccessToken)
 	}
 	req.Header.Set("E2b-Sandbox-Id", s.ID)
-	req.Header.Set("E2b-Sandbox-Port", fmt.Sprintf("%d", EnvdPort))
+	req.Header.Set("E2b-Sandbox-Port", fmt.Sprintf("%d", port))
 }

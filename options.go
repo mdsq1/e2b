@@ -170,6 +170,7 @@ type commandConfig struct {
 	onStdout       func(string)      // 标准输出回调
 	onStderr       func(string)      // 标准错误回调
 	timeout        int               // 命令超时时间（秒）
+	timeoutSet     bool              // 是否显式设置了 timeout（区分默认与显式 0）
 	requestTimeout *time.Duration    // 请求超时时间
 	stdin          bool              // 是否启用标准输入
 }
@@ -202,9 +203,10 @@ func WithOnStderr(fn func(string)) CommandOption {
 	return func(c *commandConfig) { c.onStderr = fn }
 }
 
-// WithCommandTimeout 设置命令的超时时间（秒）。
+// WithCommandTimeout 设置命令的超时时间（秒）。0 表示不限制时间。
+// 与 Python SDK 对齐：未调用此选项时默认使用 DefaultCommandTimeout（60 秒）。
 func WithCommandTimeout(seconds int) CommandOption {
-	return func(c *commandConfig) { c.timeout = seconds }
+	return func(c *commandConfig) { c.timeout = seconds; c.timeoutSet = true }
 }
 
 // WithCommandRequestTimeout 设置命令请求的超时时间。
@@ -225,6 +227,7 @@ type runCodeConfig struct {
 	codeContext *CodeContext         // 代码执行上下文
 	envVars     map[string]string    // 环境变量
 	timeout     float64              // 超时时间（秒）
+	cwd         string               // 工作目录（仅 CreateCodeContext 使用）
 	onStdout    func(OutputMessage)  // 标准输出回调
 	onStderr    func(OutputMessage)  // 标准错误回调
 	onResult    func(Result)         // 结果回调
@@ -274,6 +277,12 @@ func WithOnError(fn func(ExecutionError)) RunCodeOption {
 	return func(c *runCodeConfig) { c.onError = fn }
 }
 
+// WithCodeCwd 设置代码上下文的工作目录（仅 CreateCodeContext 使用）。
+// 与 Python SDK create_code_context(cwd=...) 对齐。
+func WithCodeCwd(cwd string) RunCodeOption {
+	return func(c *runCodeConfig) { c.cwd = cwd }
+}
+
 // === 文件 URL 选项 ===
 
 // fileURLConfig 包含文件 URL 生成的内部配置参数。
@@ -303,6 +312,8 @@ type filesystemConfig struct {
 	requestTimeout *time.Duration // 请求超时时间
 	depth          int            // 目录列表深度
 	recursive      bool           // 是否递归操作
+	watchTimeout   int            // 目录监听超时（秒），0 表示不限制
+	onExit         func(error)    // 目录监听结束时的回调（仅 WatchDir 使用）
 }
 
 // FilesystemOption 是用于配置文件系统操作的函数选项类型。
@@ -326,4 +337,16 @@ func WithDepth(depth int) FilesystemOption {
 // WithRecursive 设置是否递归操作目录。
 func WithRecursive(recursive bool) FilesystemOption {
 	return func(c *filesystemConfig) { c.recursive = recursive }
+}
+
+// WithWatchTimeout 设置 WatchDir 目录监听的超时时间（秒），0 表示不限制。
+// 与 Python SDK 的 watch_dir timeout 参数对齐。
+func WithWatchTimeout(seconds int) FilesystemOption {
+	return func(c *filesystemConfig) { c.watchTimeout = seconds }
+}
+
+// WithOnFsExit 设置 WatchDir 监听结束时的回调函数（仅在出错时触发）。
+// 与 Python SDK 的 watch_dir on_exit 参数对齐。
+func WithOnFsExit(fn func(error)) FilesystemOption {
+	return func(c *filesystemConfig) { c.onExit = fn }
 }

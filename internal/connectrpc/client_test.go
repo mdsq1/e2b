@@ -152,6 +152,45 @@ func TestCallServerStream(t *testing.T) {
 	}
 }
 
+func TestCallUnaryExtraHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Basic dXNlcjo=" {
+			t.Errorf("expected Authorization header, got %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, HTTPClient: server.Client()}
+	extraHeaders := map[string]string{"Authorization": "Basic dXNlcjo="}
+	err := client.CallUnary(context.Background(), "svc", "Method", struct{}{}, nil, extraHeaders)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCallServerStreamExtraHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Basic cm9vdDo=" {
+			t.Errorf("expected Authorization header, got %q", r.Header.Get("Authorization"))
+		}
+		trailer, _ := json.Marshal(map[string]interface{}{})
+		header := EncodeEnvelope(trailer)
+		header[0] = 0x02
+		w.Write(header)
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, HTTPClient: server.Client()}
+	extraHeaders := map[string]string{"Authorization": "Basic cm9vdDo="}
+	stream, err := client.CallServerStream(context.Background(), "svc", "Stream", struct{}{}, 0, extraHeaders)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer stream.Close()
+}
+
 func TestCallServerStreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// end_stream trailer with error

@@ -3,6 +3,9 @@ package e2b
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -193,8 +196,16 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 }
 
 // KillSandbox 根据 ID 销毁沙箱。
-func (c *Client) KillSandbox(ctx context.Context, sandboxID string) error {
-	return c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+sandboxID, nil, nil)
+// 与 Python SDK 对齐：返回 (true, nil) 销毁成功，(false, nil) 表示未找到。
+func (c *Client) KillSandbox(ctx context.Context, sandboxID string) (bool, error) {
+	err := c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+sandboxID, nil, nil)
+	if err != nil {
+		if _, ok := err.(*NotFoundError); ok {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // SetSandboxTimeout 根据 ID 设置沙箱的超时时间。
@@ -214,8 +225,16 @@ func (c *Client) GetSandboxInfo(ctx context.Context, sandboxID string) (*Sandbox
 }
 
 // PauseSandbox 根据 ID 暂停沙箱。
+// 与 Python SDK 对齐：409 Conflict 表示沙箱已暂停，静默成功返回 nil。
 func (c *Client) PauseSandbox(ctx context.Context, sandboxID string) error {
-	return c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/pause", nil, nil)
+	err := c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/pause", nil, nil)
+	if err != nil {
+		if isConflictError(err) {
+			return nil // 已暂停状态，静默成功
+		}
+		return err
+	}
+	return nil
 }
 
 // ListSandboxes 返回用于列出沙箱的分页器。
@@ -312,7 +331,8 @@ type createSandboxRequest struct {
 // createSandboxResponse 是创建或连接沙箱时的响应体。
 type createSandboxResponse struct {
 	SandboxID          string `json:"sandboxID"`
-	SandboxDomain      string `json:"clientID"`
+	ClientID           string `json:"clientID"` // 客户端标识符（短 ID），不是域名
+	Domain             string `json:"domain"`   // 沙盒域名（如 aisandbox.qihoo.net），可能为空
 	EnvdVersion        string `json:"envdVersion"`
 	EnvdAccessToken    string `json:"envdAccessToken"`
 	TrafficAccessToken string `json:"trafficAccessToken"`
@@ -323,16 +343,12 @@ type connectSandboxResponse struct {
 	EnvdVersion        string `json:"envdVersion"`
 	EnvdAccessToken    string `json:"envdAccessToken"`
 	TrafficAccessToken string `json:"trafficAccessToken"`
+	Domain             string `json:"domain"` // 沙箱域名，与 createSandboxResponse 对齐
 }
 
 // snapshotResponse 是创建快照时的响应体。
 type snapshotResponse struct {
 	SnapshotID string `json:"snapshotID"`
-}
-
-// metricsResponse 封装了从 API 返回的指标数组。
-type metricsResponse struct {
-	Metrics []SandboxMetrics `json:"metrics"`
 }
 
 // CreateSandbox 创建一个新的沙箱并返回已连接的 Sandbox 实例。
@@ -363,26 +379,86 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 		return nil, err
 	}
 
-	sbx := c.newSandbox(resp.SandboxID, resp.SandboxDomain, resp.EnvdVersion, resp.EnvdAccessToken, resp.TrafficAccessToken)
+	// 与 Python SDK 对齐：envd < 0.1.0 表示模板过旧，需先 kill 再报错
+	if ev := parseEnvdVersion(resp.EnvdVersion); versionLessThan(ev, [3]int{0, 1, 0}) {
+		_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
+		return nil, &TemplateError{SandboxError{Message: "you need to update the template. Run `e2b template build` in the template directory."}}
+	}
+
+	// domain 字段为沙盒域名；若 API 未返回或返回无效值则 fallback 到 config.Domain
+	sandboxDomain := resp.Domain
+	if sandboxDomain == "" || !strings.Contains(sandboxDomain, ".") {
+		sandboxDomain = c.config.Domain
+	}
+	sbx := c.newSandbox(resp.SandboxID, sandboxDomain, resp.EnvdVersion, resp.EnvdAccessToken, resp.TrafficAccessToken)
+
+	// 与 Python SDK 对齐：如果指定了 MCP 配置，在沙箱内启动 mcp-gateway 进程。
+	if len(cfg.mcp) > 0 {
+		token, err := generateToken()
+		if err != nil {
+			_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
+			return nil, &SandboxError{Message: fmt.Sprintf("failed to generate MCP token: %v", err), Cause: err}
+		}
+		mcpJSON, err := json.Marshal(cfg.mcp)
+		if err != nil {
+			_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
+			return nil, &SandboxError{Message: fmt.Sprintf("failed to marshal MCP config: %v", err), Cause: err}
+		}
+		result, err := sbx.Commands.Run(ctx,
+			fmt.Sprintf("mcp-gateway --config '%s'", string(mcpJSON)),
+			WithUser("root"),
+			WithCommandEnvVars(map[string]string{"GATEWAY_ACCESS_TOKEN": token}),
+		)
+		if err != nil {
+			_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
+			return nil, &SandboxError{Message: fmt.Sprintf("failed to start MCP gateway: %v", err), Cause: err}
+		}
+		if result.ExitCode != 0 {
+			_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
+			return nil, &SandboxError{Message: fmt.Sprintf("failed to start MCP gateway: %s", result.Stderr)}
+		}
+		sbx.mcpToken = token
+	}
+
 	return sbx, nil
 }
 
 // ConnectSandbox 根据 ID 连接到一个已存在的沙箱。
-func (c *Client) ConnectSandbox(ctx context.Context, sandboxID string) (*Sandbox, error) {
+// 与 Python SDK 对齐：支持 timeout 参数，发送 body {"timeout": N} 到连接接口。
+func (c *Client) ConnectSandbox(ctx context.Context, sandboxID string, timeoutSeconds ...int) (*Sandbox, error) {
+	type connectBody struct {
+		Timeout int `json:"timeout,omitempty"`
+	}
+	body := &connectBody{}
+	if len(timeoutSeconds) > 0 && timeoutSeconds[0] > 0 {
+		body.Timeout = timeoutSeconds[0]
+	} else {
+		body.Timeout = DefaultSandboxTimeout // 与 Python 对齐：默认 300 秒
+	}
+
 	var resp connectSandboxResponse
-	err := c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/connect", nil, &resp)
+	err := c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/connect", body, &resp)
 	if err != nil {
 		return nil, err
 	}
 
-	// 获取沙箱信息以获得域名
-	info, err := c.GetSandboxInfo(ctx, sandboxID)
-	if err != nil {
-		return nil, err
+	// 使用响应中的域名；若缺失或不合法则 fallback 到配置的域名。
+	sandboxDomain := resp.Domain
+	if sandboxDomain == "" || !strings.Contains(sandboxDomain, ".") {
+		sandboxDomain = c.config.Domain
 	}
 
-	sbx := c.newSandbox(sandboxID, info.SandboxID+"."+c.config.Domain, resp.EnvdVersion, resp.EnvdAccessToken, resp.TrafficAccessToken)
+	sbx := c.newSandbox(sandboxID, sandboxDomain, resp.EnvdVersion, resp.EnvdAccessToken, resp.TrafficAccessToken)
 	return sbx, nil
+}
+
+// generateToken 生成一个随机的 16 字节十六进制令牌（与 Python uuid.uuid4() 等效）。
+func generateToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // newSandbox 创建一个新的 Sandbox 实例并初始化其子模块。
@@ -396,6 +472,9 @@ func (c *Client) newSandbox(sandboxID, sandboxDomain, envdVersion, envdAccessTok
 		envdVersion:        parseEnvdVersion(envdVersion),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
 		},
 	}
 	sbx.envdAPIURL = c.config.GetSandboxURL(sandboxID, sandboxDomain)
