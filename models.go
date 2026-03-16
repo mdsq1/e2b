@@ -36,7 +36,7 @@ type SandboxMetrics struct {
 	DiskUsed   int64     `json:"diskUsed"`   // 磁盘已用（字节）
 	MemTotal   int64     `json:"memTotal"`   // 内存总量（字节）
 	MemUsed    int64     `json:"memUsed"`    // 内存已用（字节）
-	Timestamp  time.Time `json:"timestamp"` // 时间戳
+	Timestamp  time.Time `json:"timestamp"`  // 时间戳
 }
 
 // SnapshotInfo 包含快照的信息。
@@ -65,15 +65,15 @@ const (
 
 // EntryInfo 包含文件或目录的详细信息。
 type EntryInfo struct {
-	Name          string    `json:"name"`                     // 名称
-	Path          string    `json:"path"`                     // 路径
-	Type          EntryType `json:"type"`                     // 类型（文件/目录）
-	Size          int64     `json:"size"`                     // 大小（字节）
-	Permissions   string    `json:"permissions"`              // 权限字符串
-	Mode          uint32    `json:"mode"`                     // 权限模式
-	Owner         string    `json:"owner"`                    // 所有者
-	Group         string    `json:"group"`                    // 所属组
-	ModifiedTime  time.Time `json:"modifiedTime"`             // 修改时间
+	Name          string    `json:"name"`                    // 名称
+	Path          string    `json:"path"`                    // 路径
+	Type          EntryType `json:"type"`                    // 类型（文件/目录）
+	Size          int64     `json:"size"`                    // 大小（字节）
+	Permissions   string    `json:"permissions"`             // 权限字符串
+	Mode          uint32    `json:"mode"`                    // 权限模式
+	Owner         string    `json:"owner"`                   // 所有者
+	Group         string    `json:"group"`                   // 所属组
+	ModifiedTime  time.Time `json:"modifiedTime"`            // 修改时间
 	SymlinkTarget *string   `json:"symlinkTarget,omitempty"` // 符号链接目标
 }
 
@@ -111,7 +111,7 @@ type PtySize struct {
 // OutputMessage 表示代码执行的单行输出。
 type OutputMessage struct {
 	Line      string `json:"line"`      // 输出行内容
-	Timestamp int64  `json:"timestamp"` // 时间戳
+	Timestamp int64  `json:"timestamp"` // Unix 毫秒时间戳；缺失或无法解析时为 0
 	Error     bool   `json:"error"`     // 是否为错误输出
 }
 
@@ -127,9 +127,9 @@ type SandboxQuery struct {
 // Paginator 提供对 API 结果的惰性分页功能。
 // 非协程安全；设计为单协程使用。
 type Paginator[T any] struct {
-	hasNext   bool                                                                   // 是否还有下一页
-	nextToken string                                                                 // 下一页令牌
-	limit     int                                                                    // 每页数量限制
+	hasNext   bool                                                                    // 是否还有下一页
+	nextToken string                                                                  // 下一页令牌
+	limit     int                                                                     // 每页数量限制
 	fetchFunc func(ctx context.Context, token string, limit int) ([]T, string, error) // 获取数据的函数
 }
 
@@ -201,7 +201,7 @@ type MCPConfig map[string]any
 
 // GitHubMCPServerConfig 是 GitHub MCP 服务器的类型化配置。
 type GitHubMCPServerConfig struct {
-	RunCmd     string            `json:"run_cmd"`              // 运行命令
+	RunCmd     string            `json:"run_cmd"`               // 运行命令
 	InstallCmd string            `json:"install_cmd,omitempty"` // 安装命令
 	Envs       map[string]string `json:"envs,omitempty"`        // 环境变量
 }
@@ -344,10 +344,10 @@ type ChartType string
 
 // 图表类型常量。
 const (
-	ChartTypeLine          ChartType = "line"           // 折线图
-	ChartTypeScatter       ChartType = "scatter"        // 散点图
-	ChartTypeBar           ChartType = "bar"            // 柱状图
-	ChartTypePie           ChartType = "pie"            // 饼图
+	ChartTypeLine          ChartType = "line"            // 折线图
+	ChartTypeScatter       ChartType = "scatter"         // 散点图
+	ChartTypeBar           ChartType = "bar"             // 柱状图
+	ChartTypePie           ChartType = "pie"             // 饼图
 	ChartTypeBoxAndWhisker ChartType = "box_and_whisker" // 箱线图
 	ChartTypeSuperChart    ChartType = "superchart"      // 超级图表
 	ChartTypeUnknown       ChartType = "unknown"         // 未知类型

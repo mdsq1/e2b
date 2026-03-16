@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -65,8 +66,8 @@ type streamEvent struct {
 	Type string `json:"type"` // 事件类型
 
 	// 标准输出/标准错误字段
-	Text      string `json:"text,omitempty"`      // 输出文本
-	Timestamp int64  `json:"timestamp,omitempty"` // 时间戳
+	Text      string          `json:"text,omitempty"`      // 输出文本
+	Timestamp streamTimestamp `json:"timestamp,omitempty"` // 时间戳
 
 	// 结果字段
 	IsMainResult bool                   `json:"is_main_result,omitempty"` // 是否为主要结果
@@ -91,6 +92,45 @@ type streamEvent struct {
 
 	// 执行计数
 	ExecutionCount *int `json:"execution_count,omitempty"` // 执行次数
+}
+
+// streamTimestamp 是 /execute 流事件内部使用的时间戳类型。
+// SDK 内部统一将所有流事件时间戳标准化为 Unix 毫秒。
+type streamTimestamp int64
+
+func (t *streamTimestamp) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*t = 0
+		return nil
+	}
+
+	var unixTimestamp int64
+	if err := json.Unmarshal(data, &unixTimestamp); err == nil {
+		*t = streamTimestamp(unixTimestamp)
+		return nil
+	}
+
+	var timeText string
+	if err := json.Unmarshal(data, &timeText); err != nil {
+		return err
+	}
+	if timeText == "" {
+		*t = 0
+		return nil
+	}
+
+	if unixMillis, err := strconv.ParseInt(timeText, 10, 64); err == nil {
+		*t = streamTimestamp(unixMillis)
+		return nil
+	}
+
+	parsed, err := time.Parse(time.RFC3339Nano, timeText)
+	if err != nil {
+		*t = 0
+		return nil
+	}
+	*t = streamTimestamp(parsed.UnixMilli())
+	return nil
 }
 
 // RunCode 在代码解释器中执行代码并返回结果。
@@ -149,6 +189,13 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 			Stderr: []string{},
 		},
 	}
+	logf := func(format string, args ...interface{}) {
+		if ci.Sandbox.client.config.Logger != nil {
+			ci.Sandbox.client.config.Logger.Printf(format, args...)
+		}
+	}
+	logf("[e2b] RunCode start sandbox_id=%s language=%q has_context=%t code_len=%d status=%d",
+		ci.Sandbox.ID, cfg.language, cfg.codeContext != nil, len(code), resp.StatusCode)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// 扩大缓冲区至 1MB，避免大输出（如图片 base64、长文本）超过默认 64KB 限制被截断
@@ -168,29 +215,31 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 		var event streamEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			// 记录解析失败的行，方便排查响应格式问题
-			if ci.Sandbox.client.config.Logger != nil {
-				ci.Sandbox.client.config.Logger.Printf("[e2b] stream parse error: %v, line: %.200s", err, line)
-			}
+			logf("[e2b] stream parse error: %v, line: %.200s", err, line)
 			continue
 		}
+		logf("[e2b] stream event type=%s text_len=%d has_result_text=%t is_main=%t has_error=%t",
+			event.Type, len(event.Text), event.ResultText != nil && *event.ResultText != "", event.IsMainResult, event.Type == "error")
 
 		switch event.Type {
 		case "stdout":
 			exec.Logs.Stdout = append(exec.Logs.Stdout, event.Text)
+			logf("[e2b] stdout appended count=%d last_len=%d", len(exec.Logs.Stdout), len(event.Text))
 			if cfg.onStdout != nil {
 				cfg.onStdout(OutputMessage{
 					Line:      event.Text,
-					Timestamp: event.Timestamp,
+					Timestamp: int64(event.Timestamp),
 					Error:     false,
 				})
 			}
 
 		case "stderr":
 			exec.Logs.Stderr = append(exec.Logs.Stderr, event.Text)
+			logf("[e2b] stderr appended count=%d last_len=%d", len(exec.Logs.Stderr), len(event.Text))
 			if cfg.onStderr != nil {
 				cfg.onStderr(OutputMessage{
 					Line:      event.Text,
-					Timestamp: event.Timestamp,
+					Timestamp: int64(event.Timestamp),
 					Error:     true,
 				})
 			}
@@ -198,6 +247,7 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 		case "result":
 			result := ci.parseResult(&event)
 			exec.Results = append(exec.Results, result)
+			logf("[e2b] result appended count=%d text_non_empty=%t formats=%v", len(exec.Results), result.Text != nil && *result.Text != "", result.Formats())
 			if cfg.onResult != nil {
 				cfg.onResult(result)
 			}
@@ -209,18 +259,26 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 				Traceback: event.Traceback,
 			}
 			exec.Error = &execErr
+			logf("[e2b] error received name=%q value_len=%d", event.Name, len(event.Value))
 			if cfg.onError != nil {
 				cfg.onError(execErr)
 			}
 
 		case "number_of_executions":
 			exec.ExecutionCount = event.ExecutionCount
+			if event.ExecutionCount != nil {
+				logf("[e2b] execution_count=%d", *event.ExecutionCount)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		logf("[e2b] stream scanner error stdout=%d stderr=%d results=%d text_non_empty=%t err=%v",
+			len(exec.Logs.Stdout), len(exec.Logs.Stderr), len(exec.Results), exec.Text() != "", err)
 		return exec, &SandboxError{Message: fmt.Sprintf("error reading stream: %v", err), Cause: err}
 	}
+	logf("[e2b] RunCode complete stdout=%d stderr=%d results=%d text_non_empty=%t has_error=%t",
+		len(exec.Logs.Stdout), len(exec.Logs.Stderr), len(exec.Results), exec.Text() != "", exec.Error != nil)
 
 	return exec, nil
 }
@@ -242,8 +300,11 @@ func (ci *CodeInterpreter) parseResult(event *streamEvent) Result {
 		Chart:        event.Chart,
 		Extra:        event.Extra,
 	}
-	// 结果类型的 text 字段来自事件 JSON 中的 "text" 键
-	if event.Text != "" {
+	// 文本结果可能来自 text_result，也可能直接使用 text 字段。
+	if event.ResultText != nil && *event.ResultText != "" {
+		text := *event.ResultText
+		r.Text = &text
+	} else if event.Text != "" {
 		text := event.Text
 		r.Text = &text
 	}
