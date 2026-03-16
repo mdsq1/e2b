@@ -30,7 +30,7 @@ const (
 	DefaultCodeInterpreterTemplate = "code-interpreter-v1"   // 默认代码解释器模板
 
 	// SDKVersion 是 Go SDK 的版本号。
-	SDKVersion = "0.2.1"
+	SDKVersion = "0.2.2"
 
 	// AllTraffic 表示所有网络流量的 CIDR 范围。
 	AllTraffic = "0.0.0.0/0"
