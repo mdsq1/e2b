@@ -16,6 +16,12 @@ type Client struct {
 	BaseURL    string            // RPC 服务基础 URL
 	HTTPClient *http.Client      // HTTP 客户端
 	Headers    map[string]string // 自定义请求头
+	Logger     Logger            // 可选日志器
+}
+
+// Logger 是 connectrpc 包使用的最小日志接口。
+type Logger interface {
+	Printf(format string, args ...interface{})
 }
 
 // CallUnary 执行一元 RPC 调用（一个请求，一个响应）。
@@ -54,7 +60,8 @@ func (c *Client) CallUnary(ctx context.Context, service, method string, req, res
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return parseConnectError(httpResp.StatusCode, respBody)
+		c.logf("connectrpc unary failed service=%s method=%s url=%s status=%d body=%q", service, method, url, httpResp.StatusCode, truncateBody(respBody))
+		return fmt.Errorf("connect: POST %s failed: %w", url, parseConnectError(httpResp.StatusCode, respBody))
 	}
 
 	if resp != nil && len(respBody) > 0 {
@@ -102,7 +109,8 @@ func (c *Client) CallServerStream(ctx context.Context, service, method string, r
 	if httpResp.StatusCode != http.StatusOK {
 		defer httpResp.Body.Close()
 		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, parseConnectError(httpResp.StatusCode, respBody)
+		c.logf("connectrpc stream failed service=%s method=%s url=%s status=%d body=%q", service, method, url, httpResp.StatusCode, truncateBody(respBody))
+		return nil, fmt.Errorf("connect: POST %s failed: %w", url, parseConnectError(httpResp.StatusCode, respBody))
 	}
 
 	return &StreamReader{reader: httpResp.Body}, nil
@@ -113,6 +121,20 @@ func (c *Client) setHeaders(req *http.Request) {
 	for k, v := range c.Headers {
 		req.Header.Set(k, v)
 	}
+}
+
+func (c *Client) logf(format string, args ...interface{}) {
+	if c != nil && c.Logger != nil {
+		c.Logger.Printf(format, args...)
+	}
+}
+
+func truncateBody(body []byte) string {
+	const limit = 512
+	if len(body) <= limit {
+		return string(body)
+	}
+	return string(body[:limit]) + "...(truncated)"
 }
 
 // EncodeEnvelope 将数据包装在 Connect 二进制信封中。

@@ -198,6 +198,7 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 // KillSandbox 根据 ID 销毁沙箱。
 // 与 Python SDK 对齐：返回 (true, nil) 销毁成功，(false, nil) 表示未找到。
 func (c *Client) KillSandbox(ctx context.Context, sandboxID string) (bool, error) {
+	c.logf("[e2b] kill sandbox sandbox_id=%s", sandboxID)
 	err := c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+sandboxID, nil, nil)
 	if err != nil {
 		if _, ok := err.(*NotFoundError); ok {
@@ -210,6 +211,7 @@ func (c *Client) KillSandbox(ctx context.Context, sandboxID string) (bool, error
 
 // SetSandboxTimeout 根据 ID 设置沙箱的超时时间。
 func (c *Client) SetSandboxTimeout(ctx context.Context, sandboxID string, timeoutSeconds int) error {
+	c.logf("[e2b] set sandbox timeout sandbox_id=%s timeout_seconds=%d", sandboxID, timeoutSeconds)
 	body := map[string]int{"timeout": timeoutSeconds}
 	return c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/timeout", body, nil)
 }
@@ -373,6 +375,7 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 		MCP:                 cfg.mcp,
 	}
 
+	c.logf("[e2b] create sandbox template_id=%s timeout=%d", cfg.template, cfg.timeout)
 	var resp createSandboxResponse
 	err := c.doRequest(ctx, http.MethodPost, "/sandboxes", reqBody, &resp)
 	if err != nil {
@@ -381,6 +384,7 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 
 	// 与 Python SDK 对齐：envd < 0.1.0 表示模板过旧，需先 kill 再报错
 	if ev := parseEnvdVersion(resp.EnvdVersion); versionLessThan(ev, [3]int{0, 1, 0}) {
+		c.logf("[e2b] create sandbox envd_too_old sandbox_id=%s envd_version=%s killing", resp.SandboxID, resp.EnvdVersion)
 		_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
 		return nil, &TemplateError{SandboxError{Message: "you need to update the template. Run `e2b template build` in the template directory."}}
 	}
@@ -436,6 +440,7 @@ func (c *Client) ConnectSandbox(ctx context.Context, sandboxID string, timeoutSe
 		body.Timeout = DefaultSandboxTimeout // 与 Python 对齐：默认 300 秒
 	}
 
+	c.logf("[e2b] connect sandbox sandbox_id=%s timeout=%d", sandboxID, body.Timeout)
 	var resp connectSandboxResponse
 	err := c.doRequest(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/connect", body, &resp)
 	if err != nil {
@@ -478,6 +483,7 @@ func (c *Client) newSandbox(sandboxID, sandboxDomain, envdVersion, envdAccessTok
 		},
 	}
 	sbx.envdAPIURL = c.config.GetSandboxURL(sandboxID, sandboxDomain)
+	c.logf("[e2b] sandbox connected sandbox_id=%s domain=%s envd_version=%s envd_url=%s", sandboxID, sandboxDomain, envdVersion, sbx.envdAPIURL)
 
 	// 初始化用于 envd 通信的 Connect RPC 客户端
 	rpcClient := sbx.newConnectRPCClient()

@@ -137,17 +137,21 @@ func (s *Sandbox) IsRunning(ctx context.Context) (bool, error) {
 	if err != nil {
 		// 检查是否为超时错误（context deadline exceeded 或 client timeout）
 		if ctx.Err() != nil {
+			s.client.logf("[e2b] health check sandbox_id=%s running=false reason=context_timeout err=%v", s.ID, err)
 			return false, &TimeoutError{SandboxError: SandboxError{Message: "health check timed out", Cause: ctx.Err()}}
 		}
 		// 其他网络错误也可能是超时（http.Client timeout）
 		if isTimeoutError(err) {
+			s.client.logf("[e2b] health check sandbox_id=%s running=false reason=timeout err=%v", s.ID, err)
 			return false, &TimeoutError{SandboxError: SandboxError{Message: "health check timed out", Cause: err}}
 		}
+		s.client.logf("[e2b] health check sandbox_id=%s running=false reason=request_failed err=%v", s.ID, err)
 		return false, &SandboxError{Message: fmt.Sprintf("health check request failed: %v", err), Cause: err}
 	}
 	defer resp.Body.Close()
 	// 502 表示代理层认为沙箱不可达
 	if resp.StatusCode == http.StatusBadGateway {
+		s.client.logf("[e2b] health check sandbox_id=%s running=false reason=502_bad_gateway", s.ID)
 		return false, nil
 	}
 	return true, nil
@@ -160,6 +164,7 @@ func (s *Sandbox) GetHost(port int) string {
 
 // CreateSnapshot 创建当前沙箱的快照。
 func (s *Sandbox) CreateSnapshot(ctx context.Context) (*SnapshotInfo, error) {
+	s.client.logf("[e2b] create snapshot sandbox_id=%s", s.ID)
 	var resp snapshotResponse
 	err := s.client.doRequest(ctx, http.MethodPost, "/sandboxes/"+s.ID+"/snapshots", nil, &resp)
 	if err != nil {
@@ -286,6 +291,7 @@ func (s *Sandbox) newConnectRPCClient() *connectrpc.Client {
 	return &connectrpc.Client{
 		BaseURL:    s.envdAPIURL,
 		HTTPClient: s.httpClient,
+		Logger:     s.client.config.Logger,
 		Headers: map[string]string{
 			"X-Access-Token":           s.envdAccessToken,
 			"E2B-Traffic-Access-Token": s.trafficAccessToken,

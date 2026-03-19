@@ -3,11 +3,22 @@ package connectrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type testLogger struct {
+	entries []string
+}
+
+func (l *testLogger) Printf(format string, args ...interface{}) {
+	l.entries = append(l.entries, fmt.Sprintf(format, args...))
+}
 
 func TestEncodeDecodeEnvelope(t *testing.T) {
 	data := []byte(`{"hello":"world"}`)
@@ -87,8 +98,8 @@ func TestCallUnaryError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	connErr, ok := err.(*Error)
-	if !ok {
+	var connErr *Error
+	if !errors.As(err, &connErr) {
 		t.Fatalf("expected *Error, got %T", err)
 	}
 	if connErr.Code != "not_found" {
@@ -222,11 +233,42 @@ func TestCallServerStreamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	connErr, ok := err.(*Error)
-	if !ok {
+	var connErr *Error
+	if !errors.As(err, &connErr) {
 		t.Fatalf("expected *Error, got %T: %v", err, err)
 	}
 	if connErr.Code != "not_found" {
 		t.Errorf("expected code 'not_found', got %q", connErr.Code)
+	}
+}
+
+func TestCallServerStreamHTTPErrorIncludesURLAndLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	logger := &testLogger{}
+	client := &Client{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+		Logger:     logger,
+	}
+
+	_, err := client.CallServerStream(context.Background(), "svc", "Start", struct{}{}, 0)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "POST "+server.URL+"/svc/Start") {
+		t.Fatalf("expected request URL in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("expected HTTP status in error, got %v", err)
+	}
+	if len(logger.entries) == 0 {
+		t.Fatal("expected diagnostic logs to be emitted")
+	}
+	if !strings.Contains(strings.Join(logger.entries, "\n"), "status=404") {
+		t.Fatalf("expected HTTP status in logs, got %v", logger.entries)
 	}
 }

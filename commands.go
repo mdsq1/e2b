@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,8 +13,8 @@ import (
 	"github.com/mdsq1/e2b/internal/connectrpc"
 )
 
-// processServiceName 是进程管理 RPC 服务的名称。
-const processServiceName = "e2b.process.v1.ProcessService"
+// processServiceName 是进程管理 RPC 服务的名称（与官方 Python/JS SDK 一致）。
+const processServiceName = "process.Process"
 
 // Commands 提供沙箱中的命令执行功能。
 type Commands struct {
@@ -233,6 +234,7 @@ func (c *Commands) Connect(ctx context.Context, pid int, opts ...CommandOption) 
 		timeoutMs = cfg.timeout * 1000
 	}
 
+	c.sandbox.client.logf("[e2b] process connect sandbox_id=%s pid=%d method=Connect", c.sandbox.ID, pid)
 	stream, err := c.rpc.CallServerStream(ctx, processServiceName, "Connect", req, timeoutMs)
 	if err != nil {
 		return nil, &SandboxError{Message: fmt.Sprintf("failed to connect to process %d: %v", pid, err), Cause: err}
@@ -260,6 +262,7 @@ func (c *Commands) Connect(ctx context.Context, pid int, opts ...CommandOption) 
 
 // List 返回沙箱中所有正在运行的进程。
 func (c *Commands) List(ctx context.Context) ([]ProcessInfo, error) {
+	c.sandbox.client.logf("[e2b] process list sandbox_id=%s method=List", c.sandbox.ID)
 	var resp listProcessesResponse
 	err := c.rpc.CallUnary(ctx, processServiceName, "List", struct{}{}, &resp)
 	if err != nil {
@@ -286,7 +289,8 @@ func (c *Commands) Kill(ctx context.Context, pid int) (bool, error) {
 	req := sendSignalRequest{Process: processSelector{PID: pid}, Signal: "SIGNAL_SIGKILL"}
 	err := c.rpc.CallUnary(ctx, processServiceName, "SendSignal", req, nil)
 	if err != nil {
-		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
+		var connErr *connectrpc.Error
+		if errors.As(err, &connErr) && connErr.Code == ConnectCodeNotFound {
 			return false, nil
 		}
 		return false, &SandboxError{Message: fmt.Sprintf("failed to kill process %d: %v", pid, err), Cause: err}
@@ -341,6 +345,9 @@ func (c *Commands) startStream(ctx context.Context, cmd string, cfg *commandConf
 	// 与 Python SDK 对齐：通过 Authorization: Basic 头传递用户身份，
 	// 而不是用 su 命令切换用户（Python: authentication_header(version, user)）。
 	authHeader := buildAuthHeader(user)
+	if c != nil && c.sandbox != nil && c.sandbox.client != nil {
+		c.sandbox.client.logf("[e2b] command start sandbox_id=%s envd_url=%s cmd=%q cwd=%q service=%s method=Start", c.sandbox.ID, c.sandbox.envdAPIURL, cmd, cfg.cwd, processServiceName)
+	}
 
 	stream, err := c.rpc.CallServerStream(ctx, processServiceName, "Start", req, timeoutMs, authHeader)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -38,8 +39,8 @@ type watchDirResponse struct {
 	Filesystem *watchDirFilesystemEvent `json:"filesystem,omitempty"`
 }
 
-// filesystemServiceName 是文件系统 RPC 服务的名称。
-const filesystemServiceName = "e2b.filesystem.v1.FilesystemService"
+// filesystemServiceName 是文件系统 RPC 服务的名称（与官方 Python/JS SDK 一致）。
+const filesystemServiceName = "filesystem.Filesystem"
 
 // Filesystem 提供沙箱中的文件操作功能。
 type Filesystem struct {
@@ -92,16 +93,27 @@ func (f *Filesystem) ReadStream(ctx context.Context, path string, opts ...Filesy
 
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
+		f.sandbox.client.logf("[e2b] filesystem read failed sandbox_id=%s path=%s err=%v", f.sandbox.ID, path, err)
 		return nil, &SandboxError{Message: fmt.Sprintf("read request failed: %v", err), Cause: err}
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
+		f.sandbox.client.logf("[e2b] filesystem read failed sandbox_id=%s path=%s status=%d body=%q", f.sandbox.ID, path, resp.StatusCode, truncateLogBody(body))
 		return nil, mapHTTPError(resp.StatusCode, string(body))
 	}
 
 	return resp.Body, nil
+}
+
+// truncateLogBody 截断日志中的 body，避免过长。
+func truncateLogBody(body []byte) string {
+	const limit = 256
+	if len(body) <= limit {
+		return string(body)
+	}
+	return string(body[:limit]) + "...(truncated)"
 }
 
 // Write 将数据写入文件。
@@ -169,12 +181,14 @@ func (f *Filesystem) WriteFiles(ctx context.Context, files []WriteEntry, opts ..
 
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
+		f.sandbox.client.logf("[e2b] filesystem write failed sandbox_id=%s path_count=%d err=%v", f.sandbox.ID, len(files), err)
 		return nil, &SandboxError{Message: fmt.Sprintf("write request failed: %v", err), Cause: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		f.sandbox.client.logf("[e2b] filesystem write failed sandbox_id=%s path_count=%d status=%d body=%q", f.sandbox.ID, len(files), resp.StatusCode, truncateLogBody(body))
 		return nil, mapHTTPError(resp.StatusCode, string(body))
 	}
 
@@ -299,6 +313,7 @@ func (f *Filesystem) List(ctx context.Context, path string, opts ...FilesystemOp
 	user := f.sandbox.resolveUsername(cfg.user)
 	authHeader := buildAuthHeader(user)
 
+	f.sandbox.client.logf("[e2b] filesystem list sandbox_id=%s path=%s service=%s method=%s", f.sandbox.ID, path, filesystemServiceName, "ListDir")
 	req := listDirRequest{Path: path, Depth: depth}
 	var resp listDirResponse
 	err := f.rpc.CallUnary(ctx, filesystemServiceName, "ListDir", req, &resp, authHeader)
@@ -322,7 +337,8 @@ func (f *Filesystem) MakeDir(ctx context.Context, path string, opts ...Filesyste
 	req := makeDirRequest{Path: path}
 	err := f.rpc.CallUnary(ctx, filesystemServiceName, "MakeDir", req, nil, authHeader)
 	if err != nil {
-		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeAlreadyExists {
+		var connErr *connectrpc.Error
+		if errors.As(err, &connErr) && connErr.Code == ConnectCodeAlreadyExists {
 			return false, nil
 		}
 		return false, &SandboxError{Message: fmt.Sprintf("failed to create directory: %v", err), Cause: err}
@@ -340,7 +356,8 @@ func (f *Filesystem) Exists(ctx context.Context, path string, opts ...Filesystem
 	var resp statResponse
 	err := f.rpc.CallUnary(ctx, filesystemServiceName, "Stat", req, &resp, authHeader)
 	if err != nil {
-		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
+		var connErr *connectrpc.Error
+		if errors.As(err, &connErr) && connErr.Code == ConnectCodeNotFound {
 			return false, nil
 		}
 		return false, &SandboxError{Message: fmt.Sprintf("failed to stat path: %v", err), Cause: err}

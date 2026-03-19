@@ -180,6 +180,9 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if ci.Sandbox.client != nil {
+			ci.Sandbox.client.logf("[e2b] code_interpreter execute failed sandbox_id=%s status=%d body=%q", ci.Sandbox.ID, resp.StatusCode, truncateLogBody(body))
+		}
 		return nil, mapHTTPError(resp.StatusCode, string(body))
 	}
 

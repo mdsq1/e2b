@@ -2,6 +2,7 @@ package e2b
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -49,7 +50,8 @@ func (h *PtyHandle) Kill(ctx context.Context) (bool, error) {
 	req := sendSignalRequest{Process: processSelector{PID: h.PID}, Signal: "SIGNAL_SIGKILL"}
 	err := h.rpc.CallUnary(ctx, processServiceName, "SendSignal", req, nil)
 	if err != nil {
-		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
+		var connErr *connectrpc.Error
+		if errors.As(err, &connErr) && connErr.Code == ConnectCodeNotFound {
 			return false, nil
 		}
 		return false, err
@@ -184,7 +186,8 @@ func (p *Pty) Kill(ctx context.Context, pid int) (bool, error) {
 	req := sendSignalRequest{Process: processSelector{PID: pid}, Signal: "SIGNAL_SIGKILL"}
 	err := p.rpc.CallUnary(ctx, processServiceName, "SendSignal", req, nil)
 	if err != nil {
-		if connErr, ok := err.(*connectrpc.Error); ok && connErr.Code == ConnectCodeNotFound {
+		var connErr *connectrpc.Error
+		if errors.As(err, &connErr) && connErr.Code == ConnectCodeNotFound {
 			return false, nil
 		}
 		return false, &SandboxError{Message: fmt.Sprintf("failed to kill pty %d: %v", pid, err), Cause: err}
@@ -262,6 +265,9 @@ func (p *Pty) Connect(ctx context.Context, pid int, opts ...CommandOption) (*Pty
 
 // Resize 通过 PID 更改伪终端的终端尺寸。
 func (p *Pty) Resize(ctx context.Context, pid int, size PtySize) error {
+	if p.sandbox != nil && p.sandbox.client != nil {
+		p.sandbox.client.logf("[e2b] pty resize sandbox_id=%s pid=%d method=Update", p.sandbox.ID, pid)
+	}
 	req := updateRequest{
 		Process: processSelector{PID: pid},
 		Pty: &ptyConfig{
@@ -273,6 +279,9 @@ func (p *Pty) Resize(ctx context.Context, pid int, size PtySize) error {
 
 // SendStdin 通过 PID 向伪终端发送数据（使用 pty 字段，与 Python SDK 对齐）。
 func (p *Pty) SendStdin(ctx context.Context, pid int, data []byte) error {
+	if p.sandbox != nil && p.sandbox.client != nil {
+		p.sandbox.client.logf("[e2b] pty send_input sandbox_id=%s pid=%d method=SendInput data_len=%d", p.sandbox.ID, pid, len(data))
+	}
 	req := newSendPtyRequest(pid, data)
 	return p.rpc.CallUnary(ctx, processServiceName, "SendInput", req, nil)
 }
