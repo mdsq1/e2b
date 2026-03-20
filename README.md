@@ -167,10 +167,11 @@ sbx.Files.Rename(ctx, "/tmp/old", "/tmp/new")
 exists, _ := sbx.Files.Exists(ctx, "/tmp/file.txt")
 info, _ := sbx.Files.GetInfo(ctx, "/tmp/file.txt")
 
-// 监听目录变更（轮询）
-watcher, _ := sbx.Files.WatchDir(ctx, "/tmp", e2b.WithRecursive(true))
-defer watcher.Stop(ctx)
-events, _ := watcher.GetNewEvents(ctx)
+// 监听目录变更（流式回调）
+watcher, _ := sbx.Files.WatchDir(ctx, "/tmp", func(event e2b.FilesystemEvent) {
+	fmt.Println(event.Name, event.Type)
+}, e2b.WithRecursive(true))
+defer watcher.Stop()
 
 // 签名 URL（上传/下载）
 downloadURL := sbx.DownloadURL("/tmp/file.txt")
@@ -300,7 +301,7 @@ tmpl := e2b.NewTemplate(e2b.WithFileContextPath("./my-app")).
 	SetStartCmd("python -m flask run --host=0.0.0.0", e2b.WaitForPort(5000))
 
 // 构建并部署
-buildInfo, _ := client.Build(ctx, tmpl, nil)
+buildInfo, _ := client.BuildTemplate(ctx, tmpl, "my-template")
 
 // 其他基础镜像
 tmpl.FromNodeImage("20")
@@ -405,7 +406,7 @@ var tmplErr  *e2b.TemplateError     // 模板管理错误
 | **Git 推送**   | `sbx.git.push(path)`                     | `sbx.Git.Push(ctx, path)`          |
 | **Git 拉取**   | `sbx.git.pull(path)`                     | `sbx.Git.Pull(ctx, path)`          |
 | **Git 状态**   | `sbx.git.status(path)`                   | `sbx.Git.Status(ctx, path)`        |
-| **构建模板**   | `Sandbox.build(tmpl)`                    | `client.Build(ctx, tmpl, logger)`  |
+| **构建模板**   | `Sandbox.build(tmpl)`                    | `client.BuildTemplate(ctx, tmpl, name)`|
 | **参数风格**   | 关键字参数 (`timeout=300`)               | 函数式选项 (`WithTimeout(300)`)    |
 | **错误处理**   | 异常                                     | `error` 返回值 + `errors.Is/As`    |
 | **外部依赖**   | httpx, protobuf 等                       | 零依赖（仅标准库）                 |

@@ -332,8 +332,8 @@ func (t *TemplateBuilder) FromGCPRegistry(image, serviceAccountJSON string) *Tem
 // validateRelativePath 检查 src 是否为相对路径且未逃逸上下文目录。
 // 防止路径遍历攻击。
 func validateRelativePath(src string) error {
-	// filepath.IsAbs は Windows では "/" を絶対パスと認識しないため、
-	// Unix スタイルの絶対パス（"/" で始まる）も明示的に拒否する。
+	// filepath.IsAbs 在 Windows 上不会将 "/" 识别为绝对路径，
+	// 因此需要额外检查 Unix 风格的绝对路径（以 "/" 开头）。
 	if filepath.IsAbs(src) || strings.HasPrefix(src, "/") {
 		return fmt.Errorf("invalid source path %q: absolute paths are not allowed, use a relative path within the context directory", src)
 	}
@@ -997,6 +997,9 @@ func (t *TemplateBuilder) ToDockerfile() (string, error) {
 		switch inst.Type {
 		case InstructionRun:
 			if len(inst.Args) > 0 {
+				if len(inst.Args) > 1 && inst.Args[1] != "" {
+					buf.WriteString("USER " + inst.Args[1] + "\n")
+				}
 				buf.WriteString("RUN " + inst.Args[0] + "\n")
 			}
 		case InstructionCopy:

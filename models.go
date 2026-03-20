@@ -87,7 +87,7 @@ type WriteInfo struct {
 // WriteEntry 表示要写入的文件。
 type WriteEntry struct {
 	Path string      // 文件路径
-	Data interface{} // 文件数据，支持 string | []byte | io.Reader
+	Data any // 文件数据，支持 string | []byte | io.Reader
 }
 
 // ProcessInfo 包含正在运行的进程信息。
@@ -126,6 +126,8 @@ type SandboxQuery struct {
 
 // Paginator 提供对 API 结果的惰性分页功能。
 // 非协程安全；设计为单协程使用。
+// 注意：All() 方法会消耗分页器的内部状态，调用后 HasNext() 将返回 false，
+// 不可再通过 NextItems() 获取更多数据。
 type Paginator[T any] struct {
 	hasNext   bool                                                                    // 是否还有下一页
 	nextToken string                                                                  // 下一页令牌
@@ -275,12 +277,12 @@ type Result struct {
 	JPEG         *string                `json:"jpeg,omitempty"`       // JPEG 图片（Base64）
 	PDF          *string                `json:"pdf,omitempty"`        // PDF 输出（Base64）
 	LaTeX        *string                `json:"latex,omitempty"`      // LaTeX 输出
-	JSON         map[string]interface{} `json:"json,omitempty"`       // JSON 输出
-	JavaScript   *string                `json:"javascript,omitempty"` // JavaScript 输出
-	Data         map[string]interface{} `json:"data,omitempty"`       // 原始数据
+	JSON         map[string]any `json:"json,omitempty"`       // JSON 输出
+	JavaScript   *string        `json:"javascript,omitempty"` // JavaScript 输出
+	Data         map[string]any `json:"data,omitempty"`       // 原始数据
 	Chart        *Chart                 `json:"chart,omitempty"`      // 图表数据
 	IsMainResult bool                   `json:"is_main_result"`       // 是否为主要结果
-	Extra        map[string]interface{} `json:"extra,omitempty"`      // 额外数据
+	Extra        map[string]any `json:"extra,omitempty"`      // 额外数据
 }
 
 // Formats 返回所有非空输出格式的名称列表。
@@ -333,10 +335,10 @@ type CodeContext struct {
 type Chart struct {
 	Type     ChartType              `json:"type"`              // 图表类型
 	Title    string                 `json:"title"`             // 图表标题
-	Elements []interface{}          `json:"elements"`          // 图表元素列表
+	Elements []any          `json:"elements"`          // 图表元素列表
 	XLabel   string                 `json:"x_label,omitempty"` // X 轴标签
 	YLabel   string                 `json:"y_label,omitempty"` // Y 轴标签
-	RawData  map[string]interface{} `json:"-"`                 // 原始数据（不序列化）
+	RawData  map[string]any `json:"-"`                 // 原始数据（不序列化）
 }
 
 // ChartType 表示图表的类型。
