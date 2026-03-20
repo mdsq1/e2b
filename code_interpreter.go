@@ -46,7 +46,7 @@ func newCodeInterpreter(sbx *Sandbox) *CodeInterpreter {
 		jupyterHTTP: &http.Client{
 			Timeout: 5 * time.Minute,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: sbx.client.config.InsecureSkipTLS}, //nolint:gosec
 			},
 		},
 	}
@@ -79,11 +79,11 @@ type streamEvent struct {
 	JPEG         *string                `json:"jpeg,omitempty"`           // JPEG 输出
 	PDF          *string                `json:"pdf,omitempty"`            // PDF 输出
 	LaTeX        *string                `json:"latex,omitempty"`          // LaTeX 输出
-	JSON         map[string]interface{} `json:"json,omitempty"`           // JSON 输出
+	JSON         map[string]any `json:"json,omitempty"`           // JSON 输出
 	JavaScript   *string                `json:"javascript,omitempty"`     // JavaScript 输出
-	Data         map[string]interface{} `json:"data,omitempty"`           // 原始数据
+	Data         map[string]any `json:"data,omitempty"`           // 原始数据
 	Chart        *Chart                 `json:"chart,omitempty"`          // 图表数据
-	Extra        map[string]interface{} `json:"extra,omitempty"`          // 额外数据
+	Extra        map[string]any `json:"extra,omitempty"`          // 额外数据
 
 	// 错误字段
 	Name      string `json:"name,omitempty"`      // 错误名称
@@ -192,7 +192,7 @@ func (ci *CodeInterpreter) RunCode(ctx context.Context, code string, opts ...Run
 			Stderr: []string{},
 		},
 	}
-	logf := func(format string, args ...interface{}) {
+	logf := func(format string, args ...any) {
 		if ci.Sandbox.client.config.Logger != nil {
 			ci.Sandbox.client.config.Logger.Printf(format, args...)
 		}

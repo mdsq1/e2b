@@ -9,22 +9,23 @@ import (
 
 // Logger 日志回调接口
 type Logger interface {
-	Printf(format string, args ...interface{})
+	Printf(format string, args ...any)
 }
 
 // === 客户端选项 ===
 
 // clientConfig 包含客户端的内部配置参数。
 type clientConfig struct {
-	apiKey         string        // API 密钥
-	domain         string        // 服务域名
-	apiURL         string        // API 地址
-	httpClient     *http.Client  // 自定义 HTTP 客户端
-	requestTimeout time.Duration // 请求超时时间
-	debug          bool          // 调试模式
-	accessToken    string        // 访问令牌
-	sandboxURL     string        // 沙箱服务地址
-	logger         Logger        // 自定义日志输出
+	apiKey            string        // API 密钥
+	domain            string        // 服务域名
+	apiURL            string        // API 地址
+	httpClient        *http.Client  // 自定义 HTTP 客户端
+	requestTimeout    time.Duration // 请求超时时间
+	debug             bool          // 调试模式
+	accessToken       string        // 访问令牌
+	sandboxURL        string        // 沙箱服务地址
+	logger            Logger        // 自定义日志输出
+	insecureSkipTLS   bool          // 是否跳过沙箱连接的 TLS 证书验证（默认 true）
 }
 
 // ClientOption 是用于配置客户端的函数选项类型。
@@ -73,6 +74,13 @@ func WithAccessToken(token string) ClientOption {
 // WithSandboxURL 设置沙箱服务地址。
 func WithSandboxURL(url string) ClientOption {
 	return func(c *clientConfig) { c.sandboxURL = url }
+}
+
+// WithInsecureSkipTLS 设置是否跳过沙箱连接的 TLS 证书验证。
+// 默认为 true（跳过验证），因为沙箱端点通常使用自签名或内部证书。
+// 设为 false 可启用完整的 TLS 证书验证。
+func WithInsecureSkipTLS(skip bool) ClientOption {
+	return func(c *clientConfig) { c.insecureSkipTLS = skip }
 }
 
 // === 沙箱选项（创建时使用） ===

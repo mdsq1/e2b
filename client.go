@@ -24,7 +24,7 @@ type Client struct {
 }
 
 // logf 输出日志，优先使用自定义 logger，否则 fallback 到标准 log
-func (c *Client) logf(format string, args ...interface{}) {
+func (c *Client) logf(format string, args ...any) {
 	if c.config.Logger != nil {
 		c.config.Logger.Printf(format, args...)
 	} else {
@@ -36,9 +36,10 @@ func (c *Client) logf(format string, args ...interface{}) {
 // API 密钥从参数或 E2B_API_KEY 环境变量中读取。
 func NewClient(opts ...ClientOption) (*Client, error) {
 	cfg := &clientConfig{
-		domain:         DefaultDomain,
-		apiURL:         DefaultAPIURL,
-		requestTimeout: DefaultRequestTimeout,
+		domain:          DefaultDomain,
+		apiURL:          DefaultAPIURL,
+		requestTimeout:  DefaultRequestTimeout,
+		insecureSkipTLS: true, // 默认跳过沙箱连接的 TLS 证书验证（沙箱端点通常使用自签名证书）
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -108,15 +109,16 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 
 	return &Client{
 		config: ConnectionConfig{
-			APIKey:         apiKey,
-			Domain:         domain,
-			APIURL:         apiURL,
-			Debug:          debug,
-			RequestTimeout: cfg.requestTimeout,
-			AccessToken:    accessToken,
-			SandboxURL:     sandboxURL,
-			Headers:        headers,
-			Logger:         cfg.logger,
+			APIKey:          apiKey,
+			Domain:          domain,
+			APIURL:          apiURL,
+			Debug:           debug,
+			RequestTimeout:  cfg.requestTimeout,
+			AccessToken:     accessToken,
+			SandboxURL:      sandboxURL,
+			Headers:         headers,
+			Logger:          cfg.logger,
+			InsecureSkipTLS: cfg.insecureSkipTLS,
 		},
 		httpClient: httpClient,
 	}, nil
@@ -240,6 +242,7 @@ func (c *Client) PauseSandbox(ctx context.Context, sandboxID string) error {
 }
 
 // ListSandboxes 返回用于列出沙箱的分页器。
+// 注意：查询参数使用 camelCase "nextToken"，与 v2 API 一致。
 func (c *Client) ListSandboxes(ctx context.Context, query *SandboxQuery) *Paginator[SandboxInfo] {
 	return newPaginator[SandboxInfo](0, func(ctx context.Context, token string, limit int) ([]SandboxInfo, string, error) {
 		path := "/v2/sandboxes"
@@ -279,6 +282,7 @@ func (c *Client) ListSandboxes(ctx context.Context, query *SandboxQuery) *Pagina
 }
 
 // ListSnapshots 返回用于列出快照的分页器。
+// 注意：查询参数使用 snake_case "next_token"，与快照 API 一致。
 func (c *Client) ListSnapshots(ctx context.Context, sandboxID *string) *Paginator[SnapshotInfo] {
 	return newPaginator[SnapshotInfo](0, func(ctx context.Context, token string, limit int) ([]SnapshotInfo, string, error) {
 		path := "/snapshots"
@@ -311,6 +315,7 @@ func (c *Client) ListSnapshots(ctx context.Context, sandboxID *string) *Paginato
 }
 
 // DeleteSnapshot 根据 ID 删除快照。
+// 注意：API 路径使用 /templates/ 是因为服务端将快照作为模板的一种特殊形式管理。
 func (c *Client) DeleteSnapshot(ctx context.Context, snapshotID string) error {
 	return c.doRequest(ctx, http.MethodDelete, "/templates/"+snapshotID, nil, nil)
 }
@@ -409,7 +414,7 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 			return nil, &SandboxError{Message: fmt.Sprintf("failed to marshal MCP config: %v", err), Cause: err}
 		}
 		result, err := sbx.Commands.Run(ctx,
-			fmt.Sprintf("mcp-gateway --config '%s'", string(mcpJSON)),
+			fmt.Sprintf("mcp-gateway --config %s", shellQuote(string(mcpJSON))),
 			WithUser("root"),
 			WithCommandEnvVars(map[string]string{"GATEWAY_ACCESS_TOKEN": token}),
 		)
@@ -419,7 +424,11 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 		}
 		if result.ExitCode != 0 {
 			_ = c.doRequest(ctx, http.MethodDelete, "/sandboxes/"+resp.SandboxID, nil, nil)
-			return nil, &SandboxError{Message: fmt.Sprintf("failed to start MCP gateway: %s", result.Stderr)}
+			output := result.Stderr
+			if output == "" {
+				output = result.Stdout
+			}
+			return nil, &SandboxError{Message: fmt.Sprintf("failed to start MCP gateway: %s", output)}
 		}
 		sbx.mcpToken = token
 	}
@@ -429,6 +438,7 @@ func (c *Client) CreateSandbox(ctx context.Context, opts ...SandboxOption) (*San
 
 // ConnectSandbox 根据 ID 连接到一个已存在的沙箱。
 // 与 Python SDK 对齐：支持 timeout 参数，发送 body {"timeout": N} 到连接接口。
+// 注意：未指定超时时默认使用 DefaultSandboxTimeout (300s)，与 Python SDK 行为一致。
 func (c *Client) ConnectSandbox(ctx context.Context, sandboxID string, timeoutSeconds ...int) (*Sandbox, error) {
 	type connectBody struct {
 		Timeout int `json:"timeout,omitempty"`
@@ -478,7 +488,7 @@ func (c *Client) newSandbox(sandboxID, sandboxDomain, envdVersion, envdAccessTok
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: c.config.InsecureSkipTLS}, //nolint:gosec
 			},
 		},
 	}

@@ -1,6 +1,7 @@
 package e2b
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -92,18 +93,33 @@ func (e *RateLimitError) Is(target error) bool {
 	return ok
 }
 
+// ConflictError 表示资源已处于目标状态（HTTP 409）。
+type ConflictError struct {
+	SandboxError
+}
+
+// Is 实现 errors.Is 接口，用于判断目标错误是否为 ConflictError 类型。
+func (e *ConflictError) Is(target error) bool {
+	_, ok := target.(*ConflictError)
+	return ok
+}
+
 // CommandExitError 在命令以非零退出码退出时返回。
 type CommandExitError struct {
 	Stdout   string // 标准输出内容
 	Stderr   string // 标准错误内容
 	ExitCode int    // 退出码
 	Message  string // 错误信息
+	Cause    error  // 原始错误（可选）
 }
 
 // Error 返回格式化的错误信息，包含退出码和错误消息。
 func (e *CommandExitError) Error() string {
 	return fmt.Sprintf("command exited with code %d: %s", e.ExitCode, e.Message)
 }
+
+// Unwrap 返回被包装的原始错误。
+func (e *CommandExitError) Unwrap() error { return e.Cause }
 
 // GitAuthError 在 Git 认证失败时返回。
 type GitAuthError struct {
@@ -195,8 +211,8 @@ func isConflictError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "409") || strings.Contains(msg, "Conflict") || strings.Contains(msg, "conflict")
+	var conflictErr *ConflictError
+	return errors.As(err, &conflictErr)
 }
 
 // isTimeoutError 判断错误是否为超时类型（网络超时或 context 超时）。
@@ -205,11 +221,9 @@ func isTimeoutError(err error) bool {
 		return false
 	}
 	// net.Error 接口提供 Timeout() 方法
-	var netErr net.Error
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		return true
 	}
-	_ = netErr
 	// 检查错误消息中是否含有超时关键字
 	msg := err.Error()
 	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
@@ -226,6 +240,8 @@ func mapHTTPError(statusCode int, body string) error {
 		return &ForbiddenError{SandboxError{Message: body, Cause: nil}}
 	case 404:
 		return &NotFoundError{SandboxError{Message: body, Cause: nil}}
+	case 409:
+		return &ConflictError{SandboxError{Message: body, Cause: nil}}
 	case 429:
 		return &RateLimitError{SandboxError{Message: body, Cause: nil}}
 	case 502:

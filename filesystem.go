@@ -117,7 +117,7 @@ func truncateLogBody(body []byte) string {
 }
 
 // Write 将数据写入文件。
-func (f *Filesystem) Write(ctx context.Context, path string, data interface{}, opts ...FilesystemOption) (*WriteInfo, error) {
+func (f *Filesystem) Write(ctx context.Context, path string, data any, opts ...FilesystemOption) (*WriteInfo, error) {
 	infos, err := f.WriteFiles(ctx, []WriteEntry{{Path: path, Data: data}}, opts...)
 	if err != nil {
 		return nil, err

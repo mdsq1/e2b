@@ -16,7 +16,7 @@ type testLogger struct {
 	entries []string
 }
 
-func (l *testLogger) Printf(format string, args ...interface{}) {
+func (l *testLogger) Printf(format string, args ...any) {
 	l.entries = append(l.entries, fmt.Sprintf(format, args...))
 }
 

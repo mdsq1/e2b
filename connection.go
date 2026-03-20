@@ -45,15 +45,16 @@ var (
 
 // ConnectionConfig 包含与 E2B 服务建立连接所需的配置信息。
 type ConnectionConfig struct {
-	APIKey         string            // API 密钥
-	Domain         string            // 服务域名
-	APIURL         string            // API 地址
-	Debug          bool              // 是否开启调试模式
-	RequestTimeout time.Duration     // 请求超时时间
-	Headers        map[string]string // 自定义请求头
-	SandboxURL     string            // 沙箱服务地址
-	AccessToken    string            // 访问令牌
-	Logger         Logger            // 自定义日志输出
+	APIKey          string            // API 密钥
+	Domain          string            // 服务域名
+	APIURL          string            // API 地址
+	Debug           bool              // 是否开启调试模式
+	RequestTimeout  time.Duration     // 请求超时时间
+	Headers         map[string]string // 自定义请求头
+	SandboxURL      string            // 沙箱服务地址
+	AccessToken     string            // 访问令牌
+	Logger          Logger            // 自定义日志输出
+	InsecureSkipTLS bool              // 是否跳过沙箱连接的 TLS 证书验证
 }
 
 // GetHost 根据沙箱 ID、域名和端口号构建主机地址。

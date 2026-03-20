@@ -21,7 +21,7 @@ type Client struct {
 
 // Logger 是 connectrpc 包使用的最小日志接口。
 type Logger interface {
-	Printf(format string, args ...interface{})
+	Printf(format string, args ...any)
 }
 
 // CallUnary 执行一元 RPC 调用（一个请求，一个响应）。
@@ -123,7 +123,7 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 }
 
-func (c *Client) logf(format string, args ...interface{}) {
+func (c *Client) logf(format string, args ...any) {
 	if c != nil && c.Logger != nil {
 		c.Logger.Printf(format, args...)
 	}
